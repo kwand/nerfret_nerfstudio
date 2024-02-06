@@ -33,34 +33,20 @@ import mediapy as media
 import numpy as np
 import torch
 import tyro
+import viser.transforms as tf
 from jaxtyping import Float
 from rich import box, style
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    Progress,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.table import Table
 from torch import Tensor
 from typing_extensions import Annotated
 
-import viser.transforms as tf
-
-from nerfstudio.cameras.camera_paths import (
-    get_interpolated_camera_path,
-    get_path_from_json,
-    get_spiral_path,
-)
-
+from nerfstudio.cameras.camera_paths import get_interpolated_camera_path, get_path_from_json, get_spiral_path
 from nerfstudio.cameras.cameras import Cameras, CameraType, RayBundle
-from nerfstudio.data.datamanagers.base_datamanager import (
-    VanillaDataManager,
-    VanillaDataManagerConfig,
-)
+from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig
+from nerfstudio.data.datamanagers.parallel_datamanager import ParallelDataManager
+from nerfstudio.data.datamanagers.random_cameras_datamanager import RandomCamerasDataManager
 from nerfstudio.data.datasets.base_dataset import Dataset
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.data.utils.dataloaders import FixedIndicesEvalDataloader
@@ -152,7 +138,6 @@ def _render_trajectory_video(
                 obb_box = None
                 if crop_data is not None:
                     obb_box = crop_data.obb
-                camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx, obb_box=obb_box)
 
                 max_dist, max_idx = -1, -1
                 true_max_dist, true_max_idx = -1, -1
@@ -202,10 +187,14 @@ def _render_trajectory_video(
                     with renderers.background_color_override_context(
                         crop_data.background_color.to(pipeline.device)
                     ), torch.no_grad():
-                        outputs = pipeline.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                        outputs = pipeline.model.get_outputs_for_camera(
+                            cameras[camera_idx : camera_idx + 1], obb_box=obb_box
+                        )
                 else:
                     with torch.no_grad():
-                        outputs = pipeline.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                        outputs = pipeline.model.get_outputs_for_camera(
+                            cameras[camera_idx : camera_idx + 1], obb_box=obb_box
+                        )
 
                 render_image = []
                 for rendered_output_name in rendered_output_names:
@@ -245,7 +234,7 @@ def _render_trajectory_video(
                 if render_nearest_camera:
                     assert train_dataset is not None
                     assert train_cameras is not None
-                    img = train_dataset.get_image(max_idx)
+                    img = train_dataset.get_image_float32(max_idx)
                     height = cameras.image_height[0]
                     # maintain the resolution of the img to calculate the width from the height
                     width = int(img.shape[1] * (height / img.shape[0]))
@@ -375,7 +364,7 @@ class CropData:
 
     background_color: Float[Tensor, "3"] = torch.Tensor([0.0, 0.0, 0.0])
     """background color"""
-    obb: OrientedBox = OrientedBox(R=torch.eye(3), T=torch.zeros(3), S=torch.ones(3) * 2)
+    obb: OrientedBox = field(default_factory=lambda: OrientedBox(R=torch.eye(3), T=torch.zeros(3), S=torch.ones(3) * 2))
     """Oriented box representing the crop region"""
 
     # properties for backwards-compatibility interface
@@ -666,9 +655,16 @@ class SpiralRender(BaseRender):
 
         install_checks.check_ffmpeg_installed()
 
-        assert isinstance(pipeline.datamanager, VanillaDataManager)
+        assert isinstance(
+            pipeline.datamanager,
+            (
+                VanillaDataManager,
+                ParallelDataManager,
+                RandomCamerasDataManager,
+            ),
+        )
         steps = int(self.frame_rate * self.seconds)
-        camera_start = pipeline.datamanager.eval_dataloader.get_camera(image_idx=0).flatten()
+        camera_start, _ = pipeline.datamanager.eval_dataloader.get_camera(image_idx=0)
         camera_path = get_spiral_path(camera_start, steps=steps, radius=self.radius)
 
         _render_trajectory_video(
@@ -778,15 +774,14 @@ class DatasetRender(BaseRender):
                 TimeRemainingColumn(elapsed_when_finished=False, compact=False),
                 TimeElapsedColumn(),
             ) as progress:
-                for camera_idx, (ray_bundle, batch) in enumerate(progress.track(dataloader, total=len(dataset))):
+                for camera_idx, (camera, batch) in enumerate(progress.track(dataloader, total=len(dataset))):
                     image_idx = (
                             dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
                         )
                     if self.render_subset and not int(str(image_idx)) in self.idx:
                         continue
-                    ray_bundle: RayBundle
                     with torch.no_grad():
-                        outputs = pipeline.model.get_outputs_for_camera_ray_bundle(ray_bundle)
+                        outputs = pipeline.model.get_outputs_for_camera(camera)
 
                     gt_batch = batch.copy()
                     gt_batch["rgb"] = gt_batch.pop("image")

@@ -716,6 +716,8 @@ class DatasetRender(BaseRender):
     """Split to render."""
     rendered_output_names: Optional[List[str]] = field(default_factory=lambda: None)
     """Name of the renderer outputs to use. rgb, depth, raw-depth, gt-rgb etc. By default all outputs are rendered."""
+    idx = [0, 1, 2, 3, 4, 5, 9]
+    render_subset: bool = True
 
     def main(self):
         config: TrainerConfig
@@ -737,8 +739,7 @@ class DatasetRender(BaseRender):
         config, pipeline, _, _ = eval_setup(
             self.load_config,
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
-            test_mode="inference",
-            update_config_callback=update_config,
+            test_mode="inference"
         )
         data_manager_config = config.pipeline.datamanager
         assert isinstance(data_manager_config, VanillaDataManagerConfig)
@@ -778,6 +779,11 @@ class DatasetRender(BaseRender):
                 TimeElapsedColumn(),
             ) as progress:
                 for camera_idx, (ray_bundle, batch) in enumerate(progress.track(dataloader, total=len(dataset))):
+                    image_idx = (
+                            dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
+                        )
+                    if self.render_subset and not int(str(image_idx)) in self.idx:
+                        continue
                     ray_bundle: RayBundle
                     with torch.no_grad():
                         outputs = pipeline.model.get_outputs_for_camera_ray_bundle(ray_bundle)
@@ -813,7 +819,9 @@ class DatasetRender(BaseRender):
                             dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
                         )
 
+                        # [GAVINCHECK]
                         output_path = self.output_path / split / rendered_output_name / image_name
+                        # output_path = self.output_path / split / rendered_output_name / os.path.basename(dataparser_outputs.image_filenames[camera_idx])
                         output_path.parent.mkdir(exist_ok=True, parents=True)
 
                         output_name = rendered_output_name

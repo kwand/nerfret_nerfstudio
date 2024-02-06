@@ -83,6 +83,10 @@ class TrainerConfig(ExperimentConfig):
     """Optionally log gradients during training"""
     gradient_accumulation_steps: int = 1
     """Number of steps to accumulate gradients over."""
+    compare_with_config: Optional[Path] = None
+    """Path to config YAML file to compare with. If the configs match, the training will be skipped."""
+    yaml_only: bool = False
+    """Config is only meant to compare against other configurations, not to actually train"""
 
 
 class Trainer:

@@ -64,6 +64,10 @@ class ScanNetDataParserConfig(DataParserConfig):
     """The fraction of images to use for training. The remaining images are for eval."""
     depth_unit_scale_factor: float = 1e-3
     """Scales the depth values to meters. Default value is 0.001 for a millimeter to meter conversion."""
+    num_images_for_training: int = -1
+    """Number of images to use for training. If -1, use all images."""
+    max_num_images_for_training: int = 1000
+    """Maximum number of images to use for training. If -1, use all images."""
 
 
 @dataclass
@@ -80,6 +84,17 @@ class ScanNet(DataParser):
         img_dir_sorted = list(sorted(image_dir.iterdir(), key=lambda x: int(x.name.split(".")[0])))
         depth_dir_sorted = list(sorted(depth_dir.iterdir(), key=lambda x: int(x.name.split(".")[0])))
         pose_dir_sorted = list(sorted(pose_dir.iterdir(), key=lambda x: int(x.name.split(".")[0])))
+
+        if self.config.num_images_for_training != -1:
+            img_dir_sorted = img_dir_sorted[: self.config.num_images_for_training]
+            depth_dir_sorted = depth_dir_sorted[: self.config.num_images_for_training]
+            pose_dir_sorted = pose_dir_sorted[: self.config.num_images_for_training]
+        
+        if self.config.max_num_images_for_training != -1 and len(img_dir_sorted) > self.config.max_num_images_for_training:
+            # linspace, choose equally spaced images (max_num_images_for_training of them)
+            img_dir_sorted = img_dir_sorted[::int(len(img_dir_sorted)/self.config.max_num_images_for_training)][:self.config.max_num_images_for_training]
+            depth_dir_sorted = depth_dir_sorted[::int(len(depth_dir_sorted)/self.config.max_num_images_for_training)][:self.config.max_num_images_for_training]
+            pose_dir_sorted = pose_dir_sorted[::int(len(pose_dir_sorted)/self.config.max_num_images_for_training)][:self.config.max_num_images_for_training]
 
         first_img = cv2.imread(str(img_dir_sorted[0].absolute()))  # type: ignore
         h, w, _ = first_img.shape
@@ -151,14 +166,15 @@ class ScanNet(DataParser):
             )
         )
 
+        # [GavinChange]: the clone() is used to ensure actual copies (not views) or tensors are returned
         cameras = Cameras(
-            fx=intrinsics[:, 0, 0],
-            fy=intrinsics[:, 1, 1],
-            cx=intrinsics[:, 0, 2],
-            cy=intrinsics[:, 1, 2],
+            fx=intrinsics[:, 0, 0].clone(),
+            fy=intrinsics[:, 1, 1].clone(),
+            cx=intrinsics[:, 0, 2].clone(),
+            cy=intrinsics[:, 1, 2].clone(),
             height=h,
             width=w,
-            camera_to_worlds=poses[:, :3, :4],
+            camera_to_worlds=poses[:, :3, :4].clone(),
             camera_type=CameraType.PERSPECTIVE,
         )
 
@@ -167,7 +183,7 @@ class ScanNet(DataParser):
             cameras=cameras,
             scene_box=scene_box,
             dataparser_scale=scale_factor,
-            dataparser_transform=transform_matrix,
+            dataparser_transform=transform_matrix.clone(),
             metadata={
                 "depth_filenames": depth_filenames if len(depth_filenames) > 0 else None,
                 "depth_unit_scale_factor": self.config.depth_unit_scale_factor,

@@ -353,10 +353,10 @@ class VanillaDataManagerConfig(DataManagerConfig):
         if self.camera_optimizer is not None:
             import warnings
 
-            CONSOLE.print(
-                "\nCameraOptimizerConfig has been moved from the DataManager to the Model.\n", style="bold yellow"
-            )
-            warnings.warn("above message coming from", FutureWarning, stacklevel=3)
+            # CONSOLE.print(
+            #     "\nCameraOptimizerConfig has been moved from the DataManager to the Model.\n", style="bold yellow"
+            # )
+            # warnings.warn("above message coming from", FutureWarning, stacklevel=3)
 
 
 TDataset = TypeVar("TDataset", bound=InputDataset, default=InputDataset)

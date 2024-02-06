@@ -136,19 +136,19 @@ class ExperimentConfig(InstantiateConfig):
         CONSOLE.log(f"Saving config to: {config_yaml_path}")
         config_yaml_path.write_text(yaml.dump(self), "utf8")
 
-    def __eq__(self, other: Any) -> bool:
-        """Equality check"""
-        if not isinstance(other, ExperimentConfig):
-            return False
+    # def __eq__(self, other: Any) -> bool:
+    #     """Equality check"""
+    #     if not isinstance(other, ExperimentConfig):
+    #         return False
 
-        self_dict = self.__dict__.copy()
-        other_dict = other.__dict__.copy()
+    #     self_dict = self.__dict__.copy()
+    #     other_dict = other.__dict__.copy()
 
-        # List of keys to ignore in comparison
-        keys_to_ignore = ['timestamp', 'vis']
+    #     # List of keys to ignore in comparison
+    #     keys_to_ignore = ['timestamp', 'vis']
 
-        for key in keys_to_ignore:
-            self_dict.pop(key, None)
-            other_dict.pop(key, None)
+    #     for key in keys_to_ignore:
+    #         self_dict.pop(key, None)
+    #         other_dict.pop(key, None)
 
-        return self_dict == other_dict
+    #     return self_dict == other_dict

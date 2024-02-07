@@ -55,13 +55,15 @@ class RunViewer:
     """Viewer configuration"""
     vis: Literal["viewer", "viewer_legacy"] = "viewer"
     """Type of viewer"""
+    skip_loading_data: bool = False
+    """Whether to allow starting the viewer without the datasets (for viewing already trained models)"""
 
     def main(self) -> None:
         """Main function."""
         config, pipeline, _, step = eval_setup(
             self.load_config,
             eval_num_rays_per_chunk=None,
-            test_mode="test",
+            test_mode="test" if not self.skip_loading_data else "inference",
         )
         num_rays_per_chunk = config.viewer.num_rays_per_chunk
         assert self.viewer.num_rays_per_chunk == -1
@@ -69,7 +71,7 @@ class RunViewer:
         config.viewer = self.viewer.as_viewer_config()
         config.viewer.num_rays_per_chunk = num_rays_per_chunk
 
-        _start_viewer(config, pipeline, step)
+        _start_viewer(config, pipeline, step, allow_loading_without_data=self.skip_loading_data)
 
     def save_checkpoint(self, *args, **kwargs):
         """
@@ -77,7 +79,7 @@ class RunViewer:
         """
 
 
-def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int):
+def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int, allow_loading_without_data: bool = False):
     """Starts the viewer
 
     Args:
@@ -101,9 +103,10 @@ def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int):
         viewer_state = ViewerState(
             config.viewer,
             log_filename=viewer_log_path,
-            datapath=pipeline.datamanager.get_datapath(),
+            datapath=pipeline.datamanager.get_datapath() if not allow_loading_without_data else None,
             pipeline=pipeline,
             share=config.viewer.make_share_url,
+            load_without_data=allow_loading_without_data
         )
         banner_messages = viewer_state.viewer_info
 
@@ -111,12 +114,16 @@ def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int):
     config.logging.local_writer.enable = False
     writer.setup_local_writer(config.logging, max_iter=config.max_num_iterations, banner_messages=banner_messages)
 
-    assert viewer_state and pipeline.datamanager.train_dataset
-    viewer_state.init_scene(
-        train_dataset=pipeline.datamanager.train_dataset,
-        train_state="completed",
-        eval_dataset=pipeline.datamanager.eval_dataset,
-    )
+    assert viewer_state 
+    if allow_loading_without_data:
+        viewer_state.init_scene()
+    else:
+        assert pipeline.datamanager.train_dataset
+        viewer_state.init_scene(
+            train_dataset=pipeline.datamanager.train_dataset,
+            train_state="completed",
+            eval_dataset=pipeline.datamanager.eval_dataset,
+        )
     if isinstance(viewer_state, ViewerLegacyState):
         viewer_state.viser_server.set_training_state("completed")
     viewer_state.update_scene(step=step)

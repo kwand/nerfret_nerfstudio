@@ -62,6 +62,7 @@ class Viewer:
         pipeline: pipeline object to use
         trainer: trainer object to use
         share: print a shareable URL
+        load_without_data: allow loading viewer without data
 
     Attributes:
         viewer_info: information string for the viewer
@@ -80,6 +81,7 @@ class Viewer:
         trainer: Optional[Trainer] = None,
         train_lock: Optional[threading.Lock] = None,
         share: bool = False,
+        load_without_data: bool = False,
     ):
         self.ready = False  # Set to True at end of constructor.
         self.config = config
@@ -88,8 +90,12 @@ class Viewer:
         self.train_lock = train_lock
         self.pipeline = pipeline
         self.log_filename = log_filename
-        self.datapath = datapath.parent if datapath.is_file() else datapath
-        self.include_time = self.pipeline.datamanager.includes_time
+
+        self.datapath = None
+        self.include_time = False
+        if not load_without_data:
+            self.datapath = datapath.parent if datapath.is_file() else datapath
+            self.include_time = self.pipeline.datamanager.includes_time
 
         if self.config.websocket_port is None:
             websocket_port = viewer_utils.get_free_port(default_port=self.config.websocket_port_default)
@@ -173,8 +179,11 @@ class Viewer:
         self.resume_train.visible = False
         # Add buttons to toggle training image visibility
         self.hide_images = self.viser_server.add_gui_button(
-            label="Hide Train Cams", disabled=False, icon=viser.Icon.EYE_OFF, color=None
+            label="Hide Train Cams", disabled=False if not load_without_data else True, 
+            icon=viser.Icon.EYE_OFF, color=None
         )
+        # TODO: technically, all the hide/show_images should be disabled if we load_without_data,
+        # but it works for now
         self.hide_images.on_click(lambda _: self.set_camera_visibility(False))
         self.hide_images.on_click(lambda _: self.toggle_cameravis_button())
         self.show_images = self.viser_server.add_gui_button(
@@ -410,8 +419,8 @@ class Viewer:
 
     def init_scene(
         self,
-        train_dataset: InputDataset,
-        train_state: Literal["training", "paused", "completed"],
+        train_dataset: Optional[InputDataset] = None,
+        train_state: Literal["training", "paused", "completed"] = "completed",
         eval_dataset: Optional[InputDataset] = None,
     ) -> None:
         """Draw some images and the scene aabb in the viewer.
@@ -420,43 +429,44 @@ class Viewer:
             dataset: dataset to render in the scene
             train_state: Current status of training
         """
-        # draw the training cameras and images
-        self.camera_handles: Dict[int, viser.CameraFrustumHandle] = {}
-        self.original_c2w: Dict[int, np.ndarray] = {}
-        image_indices = self._pick_drawn_image_idxs(len(train_dataset))
-        for idx in image_indices:
-            image = train_dataset[idx]["image"]
-            camera = train_dataset.cameras[idx]
-            image_uint8 = (image * 255).detach().type(torch.uint8)
-            image_uint8 = image_uint8.permute(2, 0, 1)
+        if train_dataset is not None:
+            # draw the training cameras and images
+            self.camera_handles: Dict[int, viser.CameraFrustumHandle] = {}
+            self.original_c2w: Dict[int, np.ndarray] = {}
+            image_indices = self._pick_drawn_image_idxs(len(train_dataset))
+            for idx in image_indices:
+                image = train_dataset[idx]["image"]
+                camera = train_dataset.cameras[idx]
+                image_uint8 = (image * 255).detach().type(torch.uint8)
+                image_uint8 = image_uint8.permute(2, 0, 1)
 
-            # torchvision can be slow to import, so we do it lazily.
-            import torchvision
+                # torchvision can be slow to import, so we do it lazily.
+                import torchvision
 
-            image_uint8 = torchvision.transforms.functional.resize(image_uint8, 100, antialias=None)  # type: ignore
-            image_uint8 = image_uint8.permute(1, 2, 0)
-            image_uint8 = image_uint8.cpu().numpy()
-            c2w = camera.camera_to_worlds.cpu().numpy()
-            R = vtf.SO3.from_matrix(c2w[:3, :3])
-            R = R @ vtf.SO3.from_x_radians(np.pi)
-            camera_handle = self.viser_server.add_camera_frustum(
-                name=f"/cameras/camera_{idx:05d}",
-                fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
-                scale=self.config.camera_frustum_scale,
-                aspect=float(camera.cx[0] / camera.cy[0]),
-                image=image_uint8,
-                wxyz=R.wxyz,
-                position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
-            )
+                image_uint8 = torchvision.transforms.functional.resize(image_uint8, 100, antialias=None)  # type: ignore
+                image_uint8 = image_uint8.permute(1, 2, 0)
+                image_uint8 = image_uint8.cpu().numpy()
+                c2w = camera.camera_to_worlds.cpu().numpy()
+                R = vtf.SO3.from_matrix(c2w[:3, :3])
+                R = R @ vtf.SO3.from_x_radians(np.pi)
+                camera_handle = self.viser_server.add_camera_frustum(
+                    name=f"/cameras/camera_{idx:05d}",
+                    fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
+                    scale=self.config.camera_frustum_scale,
+                    aspect=float(camera.cx[0] / camera.cy[0]),
+                    image=image_uint8,
+                    wxyz=R.wxyz,
+                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
+                )
 
-            @camera_handle.on_click
-            def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
-                with event.client.atomic():
-                    event.client.camera.position = event.target.position
-                    event.client.camera.wxyz = event.target.wxyz
+                @camera_handle.on_click
+                def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
+                    with event.client.atomic():
+                        event.client.camera.position = event.target.position
+                        event.client.camera.wxyz = event.target.wxyz
 
-            self.camera_handles[idx] = camera_handle
-            self.original_c2w[idx] = c2w
+                self.camera_handles[idx] = camera_handle
+                self.original_c2w[idx] = c2w
 
         self.train_state = train_state
         self.train_util = 0.9

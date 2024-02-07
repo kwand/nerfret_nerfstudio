@@ -106,6 +106,9 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
             self.dataparser.downscale_factor = 1  # Avoid opening images
         self.includes_time = self.dataparser.includes_time
 
+        if test_mode == "inference":
+            return
+
         self.train_dataparser_outputs: DataparserOutputs = self.dataparser.get_dataparser_outputs(split="train")
         self.train_dataset = self.create_train_dataset()
         self.eval_dataset = self.create_eval_dataset()

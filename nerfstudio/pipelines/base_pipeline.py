@@ -251,28 +251,26 @@ class VanillaPipeline(Pipeline):
         super().__init__()
         self.config = config
         self.test_mode = test_mode
-
+        self.datamanager: DataManager = config.datamanager.setup(
+            device=device, test_mode=test_mode, world_size=world_size, local_rank=local_rank
+        )
+        # TODO make cleaner
         seed_pts = None
-        if test_mode != "inference":
-            self.datamanager: DataManager = config.datamanager.setup(
-                device=device, test_mode=test_mode, world_size=world_size, local_rank=local_rank
-            )
-            # TODO make cleaner
-            if (
-                hasattr(self.datamanager, "train_dataparser_outputs")
-                and "points3D_xyz" in self.datamanager.train_dataparser_outputs.metadata
-            ):
-                pts = self.datamanager.train_dataparser_outputs.metadata["points3D_xyz"]
-                pts_rgb = self.datamanager.train_dataparser_outputs.metadata["points3D_rgb"]
-                seed_pts = (pts, pts_rgb)
-            # TODO(ethan): get rid of scene_bounds from the model
-            self.datamanager.to(device)
-            assert self.datamanager.train_dataset is not None, "Missing input dataset"
+        if (
+            hasattr(self.datamanager, "train_dataparser_outputs")
+            and "points3D_xyz" in self.datamanager.train_dataparser_outputs.metadata
+        ):
+            pts = self.datamanager.train_dataparser_outputs.metadata["points3D_xyz"]
+            pts_rgb = self.datamanager.train_dataparser_outputs.metadata["points3D_rgb"]
+            seed_pts = (pts, pts_rgb)
+        self.datamanager.to(device)
+        # TODO(ethan): get rid of scene_bounds from the model
+        assert self.datamanager.train_dataset is not None, "Missing input dataset"
 
         self._model = config.model.setup(
-            scene_box=self.datamanager.train_dataset.scene_box if test_mode != "inference" else None,
-            num_train_data=len(self.datamanager.train_dataset) if test_mode != "inference" else None,
-            metadata=self.datamanager.train_dataset.metadata if test_mode != "inference" else None,
+            scene_box=self.datamanager.train_dataset.scene_box,
+            num_train_data=len(self.datamanager.train_dataset),
+            metadata=self.datamanager.train_dataset.metadata,
             device=device,
             grad_scaler=grad_scaler,
             seed_points=seed_pts,

@@ -346,8 +346,8 @@ class ViewerLegacyState:
 
     def init_scene(
         self,
-        train_dataset: Optional[InputDataset] = None,
-        train_state: Literal["training", "paused", "completed"] = "completed",
+        train_dataset: InputDataset,
+        train_state: Literal["training", "paused", "completed"],
         eval_dataset: Optional[InputDataset] = None,
     ) -> None:
         """Draw some images and the scene aabb in the viewer.
@@ -362,40 +362,39 @@ class ViewerLegacyState:
             export_path_name=self.log_filename.parent.stem,
         )
 
-        if train_dataset is not None:
-            # total num of images
-            num_images = len(train_dataset)
-            if eval_dataset is not None:
-                num_images += len(eval_dataset)
+        # total num of images
+        num_images = len(train_dataset)
+        if eval_dataset is not None:
+            num_images += len(eval_dataset)
 
-            # draw the training cameras and images
-            image_indices = self._pick_drawn_image_idxs(num_images)
-            for idx in image_indices[image_indices < len(train_dataset)].tolist():
-                image = train_dataset[idx]["image"]
+        # draw the training cameras and images
+        image_indices = self._pick_drawn_image_idxs(num_images)
+        for idx in image_indices[image_indices < len(train_dataset)].tolist():
+            image = train_dataset[idx]["image"]
+            bgr = image[..., [2, 1, 0]]
+            camera_json = train_dataset.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
+            self.viser_server.add_dataset_image(idx=f"{idx:06d}", json=camera_json)
+
+        # draw the eval cameras and images
+        if eval_dataset is not None:
+            image_indices = image_indices[image_indices >= len(train_dataset)] - len(train_dataset)
+            for idx in image_indices.tolist():
+                image = eval_dataset[idx]["image"]
                 bgr = image[..., [2, 1, 0]]
-                camera_json = train_dataset.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
-                self.viser_server.add_dataset_image(idx=f"{idx:06d}", json=camera_json)
+                # color the eval image borders red
+                # TODO: color the threejs frustum instead of changing the image itself like we are doing here
+                t = int(min(image.shape[:2]) * 0.1)  # border thickness as 10% of min height or width resolution
+                bc = torch.tensor((0, 0, 1.0))
+                bgr[:t, :, :] = bc
+                bgr[-t:, :, :] = bc
+                bgr[:, -t:, :] = bc
+                bgr[:, :t, :] = bc
 
-            # draw the eval cameras and images
-            if eval_dataset is not None:
-                image_indices = image_indices[image_indices >= len(train_dataset)] - len(train_dataset)
-                for idx in image_indices.tolist():
-                    image = eval_dataset[idx]["image"]
-                    bgr = image[..., [2, 1, 0]]
-                    # color the eval image borders red
-                    # TODO: color the threejs frustum instead of changing the image itself like we are doing here
-                    t = int(min(image.shape[:2]) * 0.1)  # border thickness as 10% of min height or width resolution
-                    bc = torch.tensor((0, 0, 1.0))
-                    bgr[:t, :, :] = bc
-                    bgr[-t:, :, :] = bc
-                    bgr[:, -t:, :] = bc
-                    bgr[:, :t, :] = bc
+                camera_json = eval_dataset.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
+                self.viser_server.add_dataset_image(idx=f"{idx+len(train_dataset):06d}", json=camera_json)
 
-                    camera_json = eval_dataset.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
-                    self.viser_server.add_dataset_image(idx=f"{idx+len(train_dataset):06d}", json=camera_json)
-
-            # draw the scene box (i.e., the bounding box)
-            self.viser_server.update_scene_box(train_dataset.scene_box)
+        # draw the scene box (i.e., the bounding box)
+        self.viser_server.update_scene_box(train_dataset.scene_box)
 
         # set the initial state whether to train or not
         self.train_btn_state = train_state

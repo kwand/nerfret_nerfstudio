@@ -775,11 +775,20 @@ class DatasetRender(BaseRender):
                 TimeElapsedColumn(),
             ) as progress:
                 for camera_idx, (camera, batch) in enumerate(progress.track(dataloader, total=len(dataset))):
-                    image_idx = (
-                            dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
-                        )
-                    if self.render_subset and not int(str(image_idx)) in self.idx:
+
+                    def get_image_idx(dataparser_outputs, camera_idx, images_root):
+                        import re
+
+                        image_idx = (
+                                dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
+                            )
+                        image_idx = re.sub(r"[^0-9]", "", str(image_idx))
+
+                        return int(image_idx)
+
+                    if self.render_subset and not get_image_idx(dataparser_outputs, camera_idx, images_root) in self.idx:
                         continue
+
                     with torch.no_grad():
                         outputs = pipeline.model.get_outputs_for_camera(camera)
 

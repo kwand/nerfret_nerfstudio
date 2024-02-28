@@ -138,8 +138,8 @@ class Pipeline(nn.Module):
             self.datamanager.train_sampler.set_epoch(step)
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self.model(ray_bundle, batch)
-        if batch['image'].dtype == torch.uint8:
-            batch['image'] = batch['image'].float() / 255.0
+        if batch['image'].dtype == torch.uint8: # 
+            batch['image'] = batch['image'].float() / 255.0 # 
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 

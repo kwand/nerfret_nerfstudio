@@ -109,7 +109,7 @@ class InputDataset(Dataset):
             image = torch.clamp(image, min=0, max=255).to(torch.uint8)
         return image
 
-    def get_data(self, image_idx: int, image_type: Literal["uint8", "float32"] = "float32") -> Dict:
+    def get_data(self, image_idx: int, image_type: Literal["uint8", "float32"] = "uint8") -> Dict:
         """Returns the ImageDataset data as a dictionary.
 
         Args:

@@ -62,7 +62,7 @@ class ScanNetDataParserConfig(DataParserConfig):
     """Scales the depth values to meters. Default value is 0.001 for a millimeter to meter conversion."""
     num_images_for_training: int = -1
     """Number of images to use for training. If -1, use all images."""
-    max_num_images_for_training: int = 1000
+    max_num_images_for_training: int = 10000
     """Maximum number of images to use for training. If -1, use all images."""
 
 

@@ -97,6 +97,11 @@ class Pipeline(nn.Module):
         """Returns the device that the model is on."""
         return self.model.device
 
+    @staticmethod
+    def convert_uint8_to_float32(batch: Dict[str, torch.Tensor]):
+        if 'image' in batch and batch['image'].dtype == torch.uint8:
+            batch['image'] = batch['image'].float() / 255.0
+
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: Optional[bool] = None):
         is_ddp_model_state = True
         model_state = {}
@@ -138,8 +143,7 @@ class Pipeline(nn.Module):
             self.datamanager.train_sampler.set_epoch(step)
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self.model(ray_bundle, batch)
-        if 'image' in batch and batch['image'].dtype == torch.uint8: # 
-            batch['image'] = batch['image'].float() / 255.0 # 
+        Pipeline.convert_uint8_to_float32(batch)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
@@ -159,6 +163,7 @@ class Pipeline(nn.Module):
             self.datamanager.eval_sampler.set_epoch(step)
         ray_bundle, batch = self.datamanager.next_eval(step)
         model_outputs = self.model(ray_bundle, batch)
+        Pipeline.convert_uint8_to_float32(batch)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
@@ -300,8 +305,7 @@ class VanillaPipeline(Pipeline):
         """
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self._model(ray_bundle)  # train distributed data parallel model if world_size > 1
-        if 'image' in batch and batch['image'].dtype == torch.uint8: # 
-            batch['image'] = batch['image'].float() / 255.0 # 
+        Pipeline.convert_uint8_to_float32(batch)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
@@ -325,6 +329,7 @@ class VanillaPipeline(Pipeline):
         self.eval()
         ray_bundle, batch = self.datamanager.next_eval(step)
         model_outputs = self.model(ray_bundle)
+        Pipeline.convert_uint8_to_float32(batch)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
@@ -341,6 +346,7 @@ class VanillaPipeline(Pipeline):
         self.eval()
         camera, batch = self.datamanager.next_eval_image(step)
         outputs = self.model.get_outputs_for_camera(camera)
+        Pipeline.convert_uint8_to_float32(batch)
         metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
         assert "num_rays" not in metrics_dict
         metrics_dict["num_rays"] = (camera.height * camera.width * camera.size).item()
@@ -379,6 +385,7 @@ class VanillaPipeline(Pipeline):
                 outputs = self.model.get_outputs_for_camera(camera=camera)
                 height, width = camera.height, camera.width
                 num_rays = height * width
+                Pipeline.convert_uint8_to_float32(batch)
                 metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
                 if output_path is not None:
                     raise NotImplementedError("Saving images is not implemented yet")

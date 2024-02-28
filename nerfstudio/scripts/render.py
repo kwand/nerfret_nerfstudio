@@ -47,6 +47,7 @@ from nerfstudio.cameras.cameras import Cameras, CameraType, RayBundle
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig
 from nerfstudio.data.datamanagers.parallel_datamanager import ParallelDataManager
 from nerfstudio.data.datamanagers.random_cameras_datamanager import RandomCamerasDataManager
+from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanagerConfig
 from nerfstudio.data.datasets.base_dataset import Dataset
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.data.utils.dataloaders import FixedIndicesEvalDataloader
@@ -720,7 +721,7 @@ class DatasetRender(BaseRender):
 
         def update_config(config: TrainerConfig) -> TrainerConfig:
             data_manager_config = config.pipeline.datamanager
-            assert isinstance(data_manager_config, VanillaDataManagerConfig)
+            assert isinstance(data_manager_config, (VanillaDataManagerConfig, FullImageDatamanagerConfig))
             data_manager_config.eval_num_images_to_sample_from = -1
             data_manager_config.eval_num_times_to_repeat_images = -1
             data_manager_config.train_num_images_to_sample_from = -1
@@ -738,7 +739,7 @@ class DatasetRender(BaseRender):
             test_mode="inference"
         )
         data_manager_config = config.pipeline.datamanager
-        assert isinstance(data_manager_config, VanillaDataManagerConfig)
+        assert isinstance(data_manager_config, (VanillaDataManagerConfig, FullImageDatamanagerConfig))
 
         for split in self.split.split("+"):
             datamanager: VanillaDataManager

@@ -988,6 +988,8 @@ class LERFRender(BaseRender):
                         pipeline.model.nerfret_inference_mode = True
                         outputs = pipeline.model.get_outputs_for_camera(camera)
 
+                        torch.cuda.empty_cache()
+
                     if self.avg_pool:
                         outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
 
@@ -1084,7 +1086,6 @@ class LERFRender(BaseRender):
                         else:
                             raise ValueError(f"Unknown image format {self.image_format}")
 
-                    torch.cuda.empty_cache()
 
         table = Table(
             title=None,

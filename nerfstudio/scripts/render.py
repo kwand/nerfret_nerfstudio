@@ -1005,6 +1005,7 @@ class LERFRender(BaseRender):
                     if rendered_output_names is None:
                         # Render everything if nothing was specified.
                         rendered_output_names = VALID_OUTPUTS
+
                     for rendered_output_name in rendered_output_names:
                         if rendered_output_name not in VALID_OUTPUTS:
                             CONSOLE.rule("Error", style="red")
@@ -1085,6 +1086,9 @@ class LERFRender(BaseRender):
                             )
                         else:
                             raise ValueError(f"Unknown image format {self.image_format}")
+                    
+                    del outputs
+                    del output_image
 
 
         table = Table(

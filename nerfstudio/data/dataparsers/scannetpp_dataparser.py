@@ -112,8 +112,7 @@ class ScanNetpp(DataParser):
 
             if frame["file_path"] in test_frames:
                 i_eval.append(idx)
-            else:
-                i_train.append(idx)
+            i_train.append(idx)
 
         assert len(mask_filenames) == 0 or (len(mask_filenames) == len(image_filenames)), """
         Different number of image and mask filenames.

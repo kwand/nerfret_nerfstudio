@@ -89,8 +89,14 @@ class ScanNetpp(DataParser):
         i_train = []
         i_eval = []
         # sort the frames by fname
-        frames = meta["frames"] + meta["test_frames"]
-        test_frames = [f["file_path"] for f in meta["test_frames"]]
+        # Ignore test frames and split frames into train and val 90/10
+        frames = meta["frames"]
+        len_frames = len(frames)
+        num_test_frames = int(len_frames * 0.1)
+        # Last num_test_frames are test frames
+        test_frames = [f["file_path"] for f in frames[-num_test_frames:]]
+        #test_frames = [f["file_path"] for f in meta["test_frames"]]
+        # ^ old way of getting test frames
         frames.sort(key=lambda x: x["file_path"])
 
         for idx, frame in enumerate(frames):

@@ -48,6 +48,7 @@ from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, Va
 from nerfstudio.data.datamanagers.parallel_datamanager import ParallelDataManager
 from nerfstudio.data.datamanagers.random_cameras_datamanager import RandomCamerasDataManager
 from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanagerConfig
+from nerfstudio.data.dataparsers.scannetpp_dataparser import ScanNetppDataParserConfig
 from nerfstudio.data.datasets.base_dataset import Dataset
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.data.utils.dataloaders import FixedIndicesEvalDataloader
@@ -786,9 +787,12 @@ class DatasetRender(BaseRender):
                         image_idx = re.sub(r"[^0-9]", "", str(image_idx))
 
                         return int(image_idx)
-
-                    if self.render_subset and not get_image_idx(dataparser_outputs, camera_idx, images_root) in self.idx:
-                        continue
+                    if not isinstance(data_manager_config.dataparser, ScanNetppDataParserConfig):
+                        if self.render_subset and not get_image_idx(dataparser_outputs, camera_idx, images_root) in self.idx:
+                            continue
+                    else:
+                        if self.render_subset and not camera_idx in self.idx:
+                            continue
 
                     with torch.no_grad():
                         outputs = pipeline.model.get_outputs_for_camera(camera)

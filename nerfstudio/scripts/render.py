@@ -60,6 +60,9 @@ from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
 
+import tables
+import pgzip
+
 
 def _render_trajectory_video(
     pipeline: Pipeline,
@@ -920,6 +923,14 @@ class LERFRender(BaseRender):
     avg_pool_kernel_size: int = 3
     """Kernel size for average pooling"""
 
+    @staticmethod
+    def _get_image_idx(filename, images_root):
+        import re
+
+        image_idx = filename.with_suffix("").relative_to(images_root)
+        image_idx = re.sub(r"[^0-9]", "", str(image_idx))
+
+        return int(image_idx)
 
     def main(self):
         config, pipeline, _, _ = eval_setup(
@@ -955,12 +966,21 @@ class LERFRender(BaseRender):
                 dataparser_outputs = getattr(dataset, "_dataparser_outputs", None)
                 if dataparser_outputs is None:
                     dataparser_outputs = datamanager.dataparser.get_dataparser_outputs(split=datamanager.test_split)
+
+            images_root = Path(dataparser_outputs.image_filenames[0]).parent
+            if self.render_subset:
+                subset_image_indices = [
+                    idx
+                    for idx, filename in enumerate(dataparser_outputs.image_filenames) 
+                    if (self._get_image_idx(filename, images_root) - 1) in self.idx # Subtract 1 as LERF files begins counting from 1
+                ]
+
             dataloader = FixedIndicesEvalDataloader(
                 input_dataset=dataset,
+                image_indices=subset_image_indices if self.render_subset else None,
                 device=datamanager.device,
                 num_workers=datamanager.world_size * 4,
             )
-            images_root = Path(dataparser_outputs.image_filenames[0]).parent
             with Progress(
                 TextColumn(f":movie_camera: Rendering split {split} :movie_camera:"),
                 BarColumn(),
@@ -971,22 +991,12 @@ class LERFRender(BaseRender):
                 ItersPerSecColumn(suffix="fps"),
                 TimeRemainingColumn(elapsed_when_finished=False, compact=False),
                 TimeElapsedColumn(),
+                TextColumn(text_format="{task.description}"),
             ) as progress:
-                for camera_idx, (camera, batch) in enumerate(progress.track(dataloader, total=len(dataset))):
+                for camera_idx, (camera, batch) in enumerate(progress.track(dataloader, total=len(dataloader.image_indices))):
 
-                    def get_image_idx(dataparser_outputs, camera_idx, images_root):
-                        import re
-
-                        # LERF dataset begins counting from 1, so we need to subtract 1 from the camera_idx
-                        image_idx = (
-                                dataparser_outputs.image_filenames[camera_idx - 1].with_suffix("").relative_to(images_root)
-                            )
-                        image_idx = re.sub(r"[^0-9]", "", str(image_idx))
-
-                        return int(image_idx)
-
-                    if self.render_subset and get_image_idx(dataparser_outputs, camera_idx, images_root) not in self.idx:
-                        continue
+                    image_idx = batch['image_idx']
+                    progress.update(task_id=0, description=f"(LERF: currently rendering {image_idx=}...)")
 
                     with torch.inference_mode():
                         pipeline.model.nerfret_inference_mode = True
@@ -997,6 +1007,7 @@ class LERFRender(BaseRender):
                     if self.avg_pool:
                         outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
 
+                    progress.update(task_id=0, description=f"(LERF: finished rendering {image_idx=}...)")
                     VALID_OUTPUTS = (
                         list(outputs.keys())
                         + [f"raw-{x}" for x in outputs.keys()]
@@ -1023,11 +1034,11 @@ class LERFRender(BaseRender):
 
                         is_raw = False
                         is_depth = rendered_output_name.find("depth") != -1
-                        image_name = f"{camera_idx:05d}"
+                        # image_name = f"{image_idx:05d}"
 
                         # Try to get the original filename
                         image_name = (
-                            dataparser_outputs.image_filenames[camera_idx].with_suffix("").relative_to(images_root)
+                            dataparser_outputs.image_filenames[image_idx].with_suffix("").relative_to(images_root)
                         )
 
                         # [GAVINCHECK]
@@ -1072,16 +1083,32 @@ class LERFRender(BaseRender):
                                 .numpy()
                             )
 
+                        # TODO: I've seen the image_idx and actual filename to be off by quite a bit in some cases 
+                        # (like idx=103, filename=frame_00106 - these are not exact, I don't remember them, but I have seen off by 3)
+                        # Perhaps use a debug log or print a warning if the image_idx and filename are off by more than 1
+
+                        progress.update(task_id=0, description=f"(LERF: now saving {rendered_output_name} rendering of {image_idx=} to {output_path})")
                         # Save to file
                         if is_raw:
-                            # with gzip.open(output_path.with_suffix(".npz"), "wb") as f:
-                                # np.save(f, output_image)
+                            _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
+                            _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
+                            print(output_image.nbytes, _threads, _blocksize)
+                            with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
+                                np.save(f, output_image)
+                            # Old solutions, no longer needed (hopefully):
                             # import lzma
                             # with lzma.open(output_path.with_suffix(".npy.lzma"), "wb") as f:
                             #     np.save(f, output_image)
-                            # TODO: Doing compression takes too long and does not save us much disk space (if at all). 
+                            #
+                            # Doing compression takes too long and does not save us much disk space (if at all). 
                             # Using the native numpy.savez_compressed seems to be fastest for now at about same filesize
-                            np.savez_compressed(output_path, data=output_image)
+                            # np.savez_compressed(output_path, data=output_image)
+                            #
+                            # import tables
+                            # with tables.open_file(str(output_path.with_suffix('.h5')), mode='w') as f:
+                            #     atom = tables.Float64Atom()
+                            #     array_c = f.create_carray(f.root, 'data', atom, output_image.shape, filters=tables.Filters(complevel=1, complib='lzo'))
+                            #     array_c[:] = output_image
                         elif self.image_format == "png":
                             media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
                         elif self.image_format == "jpeg":
@@ -1233,14 +1260,11 @@ class LERFRenderCameraPath(BaseRender):
 
                 # Save to file
                 if is_raw:
-                    # with gzip.open(output_path.with_suffix(".npz"), "wb") as f:
-                        # np.save(f, output_image)
-                    # import lzma
-                    # with lzma.open(output_path.with_suffix(".npy.lzma"), "wb") as f:
-                    #     np.save(f, output_image)
-                    # TODO: Doing compression takes too long and does not save us much disk space (if at all). 
-                    # Using the native numpy.savez_compressed seems to be fastest for now at about same filesize
-                    np.savez_compressed(output_path, data=output_image)
+                    _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
+                    _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
+                    print(output_image.nbytes, _threads, _blocksize)
+                    with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
+                        np.save(f, output_image)
                 elif self.image_format == "png":
                     media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
                 elif self.image_format == "jpeg":

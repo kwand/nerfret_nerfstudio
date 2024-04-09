@@ -1092,7 +1092,7 @@ class LERFRender(BaseRender):
                         if is_raw:
                             _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
                             _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
-                            print(output_image.nbytes, _threads, _blocksize)
+                            # print(output_image.nbytes, _threads, _blocksize)
                             with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
                                 np.save(f, output_image)
                             # Old solutions, no longer needed (hopefully):

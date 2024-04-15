@@ -922,6 +922,10 @@ class LERFRender(BaseRender):
     """Whether to average pool the clip_embeds"""
     avg_pool_kernel_size: int = 3
     """Kernel size for average pooling"""
+    # faiss_index_mode: str = None
+    # """Faiss index mode from the database"""
+    trained_index_fp: Path = None
+    """Location of the trained index"""
 
     @staticmethod
     def _get_image_idx(filename, images_root):
@@ -933,9 +937,16 @@ class LERFRender(BaseRender):
         return int(image_idx)
 
     def main(self):
+        
+        import faiss
+        if "faiss-clip_embeds" in self.rendered_output_names:
+            self._faiss_index = faiss.read_index(self.trained_index_fp)
+            self._faiss_idx_count = 0 
+            self._faiss_image_to_idx_dict = {}
+            
         config, pipeline, _, _ = eval_setup(
             self.load_config,
-            eval_num_rays_per_chunk=self.eval_num_rays_per_chunk, 
+            eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
             test_mode="inference"
         )
 
@@ -1008,9 +1019,11 @@ class LERFRender(BaseRender):
                         outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
 
                     progress.update(task_id=0, description=f"(LERF: finished rendering {image_idx=}...)")
+
                     VALID_OUTPUTS = (
                         list(outputs.keys())
                         + [f"raw-{x}" for x in outputs.keys()]
+                        + ["faiss-clip_embeds"]
                     )
                     # Make sure we don't try to render clip_embeds as an image
                     if "clip_embeds" in VALID_OUTPUTS:
@@ -1032,95 +1045,127 @@ class LERFRender(BaseRender):
                             )
                             sys.exit(1)
 
-                        is_raw = False
-                        is_depth = rendered_output_name.find("depth") != -1
-                        # image_name = f"{image_idx:05d}"
+                        # Special handling for faiss-clip_embeds
+                        if rendered_output_name == "faiss-clip_embeds":
+                            progress.update(task_id=0, description=f"(LERF: now adding {rendered_output_name} of {image_idx=} to faiss index)")
 
-                        # Try to get the original filename
-                        image_name = (
-                            dataparser_outputs.image_filenames[image_idx].with_suffix("").relative_to(images_root)
-                        )
+                            emb = outputs["clip_embeds"].cpu().numpy()
+                            emb = emb.reshape(-1, emb.shape[-1])
+                            faiss.normalize_L2(emb)
+                            self._faiss_index.add_with_ids(
+                                emb, np.arange(self._faiss_idx_count, self._faiss_idx_count + emb.shape[0])
+                            )
+                            self._faiss_idx_count += emb.shape[0]
 
-                        # [GAVINCHECK]
-                        output_path = self.output_path / split / rendered_output_name / image_name
-                        # output_path = self.output_path / split / rendered_output_name / os.path.basename(dataparser_outputs.image_filenames[camera_idx])
-                        output_path.parent.mkdir(exist_ok=True, parents=True)
+                            # Use the output path of the RGB image as the key
+                            image_name = (
+                                dataparser_outputs.image_filenames[image_idx].with_suffix("").relative_to(images_root)
+                            )
+                            output_path = self.output_path / split / "rgb" / image_name
 
-                        output_name = rendered_output_name
-                        if output_name.startswith("raw-"):
-                            output_name = output_name[4:]
-                            is_raw = True
-                            output_image = outputs[output_name]
-                            if is_depth:
-                                # Divide by the dataparser scale factor
-                                output_image.div_(dataparser_outputs.dataparser_scale)
+                            # org_idx = self._get_image_idx(dataparser_outputs.image_filenames[image_idx], images_root) - 1 # Subtract 1 as LERF files begins counting from 1
+                            self._faiss_image_to_idx_dict[output_path] = self._faiss_idx_count
                         else:
-                            output_image = outputs[output_name]
-                        del output_name
+                            is_raw = False
+                            is_depth = rendered_output_name.find("depth") != -1
+                            # image_name = f"{image_idx:05d}"
 
-                        # Map to color spaces / numpy
-                        if is_raw:
-                            output_image = output_image.cpu().numpy()
-                        elif is_depth:
-                            output_image = (
-                                colormaps.apply_depth_colormap(
-                                    output_image,
-                                    accumulation=outputs["accumulation"],
-                                    near_plane=self.depth_near_plane,
-                                    far_plane=self.depth_far_plane,
-                                    colormap_options=self.colormap_options,
+                            # Try to get the original filename
+                            image_name = (
+                                dataparser_outputs.image_filenames[image_idx].with_suffix("").relative_to(images_root)
+                            )
+
+                            # [GAVINCHECK]
+                            output_path = self.output_path / split / rendered_output_name / image_name
+                            # output_path = self.output_path / split / rendered_output_name / os.path.basename(dataparser_outputs.image_filenames[camera_idx])
+                            output_path.parent.mkdir(exist_ok=True, parents=True)
+
+                            output_name = rendered_output_name
+                            if output_name.startswith("raw-"):
+                                output_name = output_name[4:]
+                                is_raw = True
+                                output_image = outputs[output_name]
+                                if is_depth:
+                                    # Divide by the dataparser scale factor
+                                    output_image.div_(dataparser_outputs.dataparser_scale)
+                            else:
+                                output_image = outputs[output_name]
+                            del output_name
+
+                            # Map to color spaces / numpy
+                            if is_raw:
+                                output_image = output_image.cpu().numpy()
+                            elif is_depth:
+                                output_image = (
+                                    colormaps.apply_depth_colormap(
+                                        output_image,
+                                        accumulation=outputs["accumulation"],
+                                        near_plane=self.depth_near_plane,
+                                        far_plane=self.depth_far_plane,
+                                        colormap_options=self.colormap_options,
+                                    )
+                                    .cpu()
+                                    .numpy()
                                 )
-                                .cpu()
-                                .numpy()
-                            )
-                        else:
-                            output_image = (
-                                colormaps.apply_colormap(
-                                    image=output_image,
-                                    colormap_options=self.colormap_options,
+                            else:
+                                output_image = (
+                                    colormaps.apply_colormap(
+                                        image=output_image,
+                                        colormap_options=self.colormap_options,
+                                    )
+                                    .cpu()
+                                    .numpy()
                                 )
-                                .cpu()
-                                .numpy()
-                            )
 
-                        # TODO: I've seen the image_idx and actual filename to be off by quite a bit in some cases 
-                        # (like idx=103, filename=frame_00106 - these are not exact, I don't remember them, but I have seen off by 3)
-                        # Perhaps use a debug log or print a warning if the image_idx and filename are off by more than 1
+                            # TODO: I've seen the image_idx and actual filename to be off by quite a bit in some cases 
+                            # (like idx=103, filename=frame_00106 - these are not exact, I don't remember them, but I have seen off by 3)
+                            # Perhaps use a debug log or print a warning if the image_idx and filename are off by more than 1
 
-                        progress.update(task_id=0, description=f"(LERF: now saving {rendered_output_name} rendering of {image_idx=} to {output_path})")
-                        # Save to file
-                        if is_raw:
-                            _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
-                            _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
-                            # print(output_image.nbytes, _threads, _blocksize)
-                            with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
-                                np.save(f, output_image)
-                            # Old solutions, no longer needed (hopefully):
-                            # import lzma
-                            # with lzma.open(output_path.with_suffix(".npy.lzma"), "wb") as f:
-                            #     np.save(f, output_image)
-                            #
-                            # Doing compression takes too long and does not save us much disk space (if at all). 
-                            # Using the native numpy.savez_compressed seems to be fastest for now at about same filesize
-                            # np.savez_compressed(output_path, data=output_image)
-                            #
-                            # import tables
-                            # with tables.open_file(str(output_path.with_suffix('.h5')), mode='w') as f:
-                            #     atom = tables.Float64Atom()
-                            #     array_c = f.create_carray(f.root, 'data', atom, output_image.shape, filters=tables.Filters(complevel=1, complib='lzo'))
-                            #     array_c[:] = output_image
-                        elif self.image_format == "png":
-                            media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
-                        elif self.image_format == "jpeg":
-                            media.write_image(
-                                output_path.with_suffix(".jpg"), output_image, fmt="jpeg", quality=self.jpeg_quality
-                            )
-                        else:
-                            raise ValueError(f"Unknown image format {self.image_format}")
+                            progress.update(task_id=0, description=f"(LERF: now saving {rendered_output_name} rendering of {image_idx=} to {output_path})")
+                            # Save to file
+                            if is_raw:
+                                _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
+                                _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
+                                # print(output_image.nbytes, _threads, _blocksize)
+                                with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
+                                    np.save(f, output_image)
+                                # Old solutions, no longer needed (hopefully):
+                                # import lzma
+                                # with lzma.open(output_path.with_suffix(".npy.lzma"), "wb") as f:
+                                #     np.save(f, output_image)
+                                #
+                                # Doing compression takes too long and does not save us much disk space (if at all). 
+                                # Using the native numpy.savez_compressed seems to be fastest for now at about same filesize
+                                # np.savez_compressed(output_path, data=output_image)
+                                #
+                                # import tables
+                                # with tables.open_file(str(output_path.with_suffix('.h5')), mode='w') as f:
+                                #     atom = tables.Float64Atom()
+                                #     array_c = f.create_carray(f.root, 'data', atom, output_image.shape, filters=tables.Filters(complevel=1, complib='lzo'))
+                                #     array_c[:] = output_image
+                            elif self.image_format == "png":
+                                media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
+                            elif self.image_format == "jpeg":
+                                media.write_image(
+                                    output_path.with_suffix(".jpg"), output_image, fmt="jpeg", quality=self.jpeg_quality
+                                )
+                            else:
+                                raise ValueError(f"Unknown image format {self.image_format}")
                     
                     del outputs
                     del output_image
 
+        if "faiss-clip_embeds" in self.rendered_output_names:
+            faiss.write_index(
+                self._faiss_index,
+                os.path.join(self.output_path, "faiss_scene.index")
+            )
+            with open(os.path.join(self.output_path, "faiss_image_to_idx_dict.json"), "w", encoding="utf-8") as f:
+                json.dump(self._faiss_image_to_idx_dict, f)
+
+            del self._faiss_index
+            del self._faiss_idx_count
+            del self._faiss_image_to_idx_dict
 
         table = Table(
             title=None,

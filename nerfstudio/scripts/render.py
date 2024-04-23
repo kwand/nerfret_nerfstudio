@@ -1061,10 +1061,11 @@ class LERFRender(BaseRender):
                             image_name = (
                                 dataparser_outputs.image_filenames[image_idx].with_suffix("").relative_to(images_root)
                             )
-                            output_path = self.output_path / split / "rgb" / image_name
+                            output_path_str = os.path.join(self.output_path, split, "rgb", image_name)
+                            output_path = Path(output_path_str)
 
                             # org_idx = self._get_image_idx(dataparser_outputs.image_filenames[image_idx], images_root) - 1 # Subtract 1 as LERF files begins counting from 1
-                            self._faiss_image_to_idx_dict[output_path] = self._faiss_idx_count
+                            self._faiss_image_to_idx_dict[output_path_str] = self._faiss_idx_count
                         else:
                             is_raw = False
                             is_depth = rendered_output_name.find("depth") != -1
@@ -1076,8 +1077,8 @@ class LERFRender(BaseRender):
                             )
 
                             # [GAVINCHECK]
-                            output_path = self.output_path / split / rendered_output_name / image_name
-                            # output_path = self.output_path / split / rendered_output_name / os.path.basename(dataparser_outputs.image_filenames[camera_idx])
+                            output_path_str = os.path.join(self.output_path, split, rendered_output_name, image_name)
+                            output_path = Path(output_path_str)
                             output_path.parent.mkdir(exist_ok=True, parents=True)
 
                             output_name = rendered_output_name

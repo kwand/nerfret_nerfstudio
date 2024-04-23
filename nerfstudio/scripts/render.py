@@ -1192,10 +1192,18 @@ class LERFRenderCameraPath(BaseRender):
     """Whether to average pool the clip_embeds"""
     avg_pool_kernel_size: int = 3
     """Kernel size for average pooling"""
+    trained_index_fp: Path = None
+    """Location of the trained faiss index"""
 
     def main(self) -> None:
         """Main function."""
         assert self.output_path is not None
+
+        import faiss
+        if "faiss-clip_embeds" in self.rendered_output_names:
+            self._faiss_index = faiss.read_index(self.trained_index_fp)
+            self._faiss_idx_count = 0 
+            self._faiss_image_to_idx_dict = {}
 
         config, pipeline, _, _ = eval_setup(
             self.load_config,
@@ -1224,104 +1232,144 @@ class LERFRenderCameraPath(BaseRender):
         if dataparser_outputs is None:
             dataparser_outputs = datamanager.dataparser.get_dataparser_outputs(split=datamanager.test_split)
 
-        for camera_idx, camera in enumerate(camera_path):
-            with torch.inference_mode():
-                pipeline.model.nerfret_inference_mode = True
-                outputs = pipeline.model.get_outputs_for_camera(camera)
+        with Progress(
+            TextColumn(f":movie_camera: Rendering camera paths for LERF :movie_camera:"),
+            BarColumn(),
+            TaskProgressColumn(
+                text_format="[progress.percentage]{task.completed}/{task.total:>.0f}({task.percentage:>3.1f}%)",
+                show_speed=True,
+            ),
+            ItersPerSecColumn(suffix="fps"),
+            TimeRemainingColumn(elapsed_when_finished=False, compact=False),
+            TimeElapsedColumn(),
+            TextColumn(text_format="{task.description}"),
+        ) as progress:
+            for camera_idx, camera in enumerate(progress.track(camera_path, total=len(camera_path))):
+                with torch.inference_mode():
+                    pipeline.model.nerfret_inference_mode = True
+                    outputs = pipeline.model.get_outputs_for_camera(camera)
 
-                torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()
 
-            if self.avg_pool:
-                outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
+                if self.avg_pool:
+                    outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
 
-            VALID_OUTPUTS = (
-                list(outputs.keys())
-                + [f"raw-{x}" for x in outputs.keys()]
+                VALID_OUTPUTS = (
+                    list(outputs.keys())
+                    + [f"raw-{x}" for x in outputs.keys()]
+                )
+                # Make sure we don't try to render clip_embeds as an image
+                if "clip_embeds" in VALID_OUTPUTS:
+                    VALID_OUTPUTS.remove("clip_embeds")
+
+                rendered_output_names = self.rendered_output_names
+                if rendered_output_names is None:
+                    # Render everything if nothing was specified.
+                    rendered_output_names = VALID_OUTPUTS
+
+                for rendered_output_name in rendered_output_names:
+                    if rendered_output_name not in VALID_OUTPUTS:
+                        CONSOLE.rule("Error", style="red")
+                        CONSOLE.print(
+                            f"Could not find {rendered_output_name} in the model outputs", justify="center"
+                        )
+                        CONSOLE.print(
+                            f"Please set --rendered-output-name to one of: {VALID_OUTPUTS}", justify="center"
+                        )
+                        sys.exit(1)
+
+                    if rendered_output_name == "faiss-clip_embeds":
+                        progress.update(task_id=0, description=f"(LERF: now adding {rendered_output_name} of {camera_idx=} to faiss index)")
+
+                        emb = outputs["clip_embeds"].cpu().numpy()
+                        emb = emb.reshape(-1, emb.shape[-1])
+                        faiss.normalize_L2(emb)
+                        self._faiss_index.add_with_ids(
+                            emb, np.arange(self._faiss_idx_count, self._faiss_idx_count + emb.shape[0])
+                        )
+                        self._faiss_idx_count += emb.shape[0]
+
+                        # Use the output path of the RGB image as the key
+                        output_path = self.output_path / "rgb" / camera_idx
+
+                        # org_idx = self._get_image_idx(dataparser_outputs.image_filenames[image_idx], images_root) - 1 # Subtract 1 as LERF files begins counting from 1
+                        self._faiss_image_to_idx_dict[output_path] = self._faiss_idx_count
+                    else:
+                        is_raw = False
+                        is_depth = rendered_output_name.find("depth") != -1
+                        image_name = f"{camera_idx:05d}"
+
+                        # [GAVINCHECK]
+                        output_path = os.path.join(self.output_path, "camera_path", rendered_output_name, image_name)
+                        output_path.parent.mkdir(exist_ok=True, parents=True)
+
+                        output_name = rendered_output_name
+                        if output_name.startswith("raw-"):
+                            output_name = output_name[4:]
+                            is_raw = True
+                            output_image = outputs[output_name]
+                            if is_depth:
+                                # Divide by the dataparser scale factor
+                                output_image.div_(dataparser_outputs.dataparser_scale)
+                        else:
+                            output_image = outputs[output_name]
+                        del output_name
+
+                        # Map to color spaces / numpy
+                        if is_raw:
+                            output_image = output_image.cpu().numpy()
+                        elif is_depth:
+                            output_image = (
+                                colormaps.apply_depth_colormap(
+                                    output_image,
+                                    accumulation=outputs["accumulation"],
+                                    near_plane=self.depth_near_plane,
+                                    far_plane=self.depth_far_plane,
+                                    colormap_options=self.colormap_options,
+                                )
+                                .cpu()
+                                .numpy()
+                            )
+                        else:
+                            output_image = (
+                                colormaps.apply_colormap(
+                                    image=output_image,
+                                    colormap_options=self.colormap_options,
+                                )
+                                .cpu()
+                                .numpy()
+                            )
+
+                        # Save to file
+                        if is_raw:
+                            _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
+                            _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
+                            print(output_image.nbytes, _threads, _blocksize)
+                            with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
+                                np.save(f, output_image)
+                        elif self.image_format == "png":
+                            media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
+                        elif self.image_format == "jpeg":
+                            media.write_image(
+                                output_path.with_suffix(".jpg"), output_image, fmt="jpeg", quality=self.jpeg_quality
+                            )
+                        else:
+                            raise ValueError(f"Unknown image format {self.image_format}")
+                
+                del outputs
+                del output_image
+
+        if "faiss-clip_embeds" in self.rendered_output_names:
+            faiss.write_index(
+                self._faiss_index,
+                os.path.join(self.output_path, "faiss_scene.index")
             )
-            # Make sure we don't try to render clip_embeds as an image
-            if "clip_embeds" in VALID_OUTPUTS:
-                VALID_OUTPUTS.remove("clip_embeds")
+            with open(os.path.join(self.output_path, "faiss_image_to_idx_dict.json"), "w", encoding="utf-8") as f:
+                json.dump(self._faiss_image_to_idx_dict, f)
 
-            rendered_output_names = self.rendered_output_names
-            if rendered_output_names is None:
-                # Render everything if nothing was specified.
-                rendered_output_names = VALID_OUTPUTS
-
-            for rendered_output_name in rendered_output_names:
-                if rendered_output_name not in VALID_OUTPUTS:
-                    CONSOLE.rule("Error", style="red")
-                    CONSOLE.print(
-                        f"Could not find {rendered_output_name} in the model outputs", justify="center"
-                    )
-                    CONSOLE.print(
-                        f"Please set --rendered-output-name to one of: {VALID_OUTPUTS}", justify="center"
-                    )
-                    sys.exit(1)
-
-                is_raw = False
-                is_depth = rendered_output_name.find("depth") != -1
-                image_name = f"{camera_idx:05d}"
-
-                # [GAVINCHECK]
-                output_path = os.path.join(self.output_path, "camera_path", rendered_output_name, image_name)
-                output_path.parent.mkdir(exist_ok=True, parents=True)
-
-                output_name = rendered_output_name
-                if output_name.startswith("raw-"):
-                    output_name = output_name[4:]
-                    is_raw = True
-                    output_image = outputs[output_name]
-                    if is_depth:
-                        # Divide by the dataparser scale factor
-                        output_image.div_(dataparser_outputs.dataparser_scale)
-                else:
-                    output_image = outputs[output_name]
-                del output_name
-
-                # Map to color spaces / numpy
-                if is_raw:
-                    output_image = output_image.cpu().numpy()
-                elif is_depth:
-                    output_image = (
-                        colormaps.apply_depth_colormap(
-                            output_image,
-                            accumulation=outputs["accumulation"],
-                            near_plane=self.depth_near_plane,
-                            far_plane=self.depth_far_plane,
-                            colormap_options=self.colormap_options,
-                        )
-                        .cpu()
-                        .numpy()
-                    )
-                else:
-                    output_image = (
-                        colormaps.apply_colormap(
-                            image=output_image,
-                            colormap_options=self.colormap_options,
-                        )
-                        .cpu()
-                        .numpy()
-                    )
-
-                # Save to file
-                if is_raw:
-                    _threads = max(len(os.sched_getaffinity(0)) // 2, 1) # Use half of the available cores
-                    _blocksize = output_image.nbytes // (_threads * 2) # Divide work into 2 blocks per thread (fastest setting, though I only tested two divisors: _threads and _threads * 2)
-                    print(output_image.nbytes, _threads, _blocksize)
-                    with pgzip.open(output_path.with_suffix(".npy.gz"), "wb", thread=_threads, blocksize=_blocksize, compresslevel=1) as f:
-                        np.save(f, output_image)
-                elif self.image_format == "png":
-                    media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
-                elif self.image_format == "jpeg":
-                    media.write_image(
-                        output_path.with_suffix(".jpg"), output_image, fmt="jpeg", quality=self.jpeg_quality
-                    )
-                else:
-                    raise ValueError(f"Unknown image format {self.image_format}")
-            
-            del outputs
-            del output_image
-
+            del self._faiss_index
+            del self._faiss_idx_count
+            del self._faiss_image_to_idx_dict
 
 
 Commands = tyro.conf.FlagConversionOff[

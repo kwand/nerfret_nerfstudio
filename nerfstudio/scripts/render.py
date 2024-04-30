@@ -1294,7 +1294,7 @@ class LERFRenderCameraPath(BaseRender):
                         output_path = self.output_path / "rgb" / camera_idx
 
                         # org_idx = self._get_image_idx(dataparser_outputs.image_filenames[image_idx], images_root) - 1 # Subtract 1 as LERF files begins counting from 1
-                        self._faiss_image_to_idx_dict[output_path] = self._faiss_idx_count
+                        self._faiss_image_to_idx_dict[str(output_path)] = self._faiss_idx_count
                     else:
                         is_raw = False
                         is_depth = rendered_output_name.find("depth") != -1

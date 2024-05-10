@@ -926,6 +926,8 @@ class LERFRender(BaseRender):
     # """Faiss index mode from the database"""
     trained_index_fp: Path = None
     """Location of the trained index"""
+    clip_scales: List[float] = field(default_factory=lambda: [1.0])
+    
 
     @staticmethod
     def _get_image_idx(filename, images_root):
@@ -1011,6 +1013,8 @@ class LERFRender(BaseRender):
 
                     with torch.inference_mode():
                         pipeline.model.nerfret_inference_mode = True
+                        pipeline.model.nerfret_best_scales = self.clip_scales
+                        pipeline.model.nerfret_outputs = ["clip_embeds", "rgb"]
                         outputs = pipeline.model.get_outputs_for_camera(camera)
 
                         torch.cuda.empty_cache()
@@ -1195,6 +1199,7 @@ class LERFRenderCameraPath(BaseRender):
     """Kernel size for average pooling"""
     trained_index_fp: Path = None
     """Location of the trained faiss index"""
+    clip_scales: List[float] = field(default_factory=lambda: [1.0])
 
     def main(self) -> None:
         """Main function."""
@@ -1248,6 +1253,8 @@ class LERFRenderCameraPath(BaseRender):
             for camera_idx, camera in enumerate(progress.track(camera_path, total=len(camera_path))):
                 with torch.inference_mode():
                     pipeline.model.nerfret_inference_mode = True
+                    pipeline.model.nerfret_best_scales = self.clip_scales
+                    pipeline.model.nerfret_outputs = ["clip_embeds", "rgb"]
                     outputs = pipeline.model.get_outputs_for_camera(camera)
 
                     torch.cuda.empty_cache()

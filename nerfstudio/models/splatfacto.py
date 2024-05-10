@@ -831,12 +831,13 @@ class SplatfactoModel(Model):
 
         # Set masked part of both ground-truth and rendered image to black.
         # This is a little bit sketchy for the SSIM loss.
-        if "mask" in batch:
-            # batch["mask"] : [H, W, 1]
-            assert batch["mask"].shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
-            mask = batch["mask"].to(self.device)
-            gt_img = gt_img * mask
-            pred_img = pred_img * mask
+        # Gavin: Modifying splatfacto to not use mask
+        # if "mask" in batch:
+        #     # batch["mask"] : [H, W, 1]
+        #     assert batch["mask"].shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
+        #     mask = batch["mask"].to(self.device)
+        #     gt_img = gt_img * mask
+        #     pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
         simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])

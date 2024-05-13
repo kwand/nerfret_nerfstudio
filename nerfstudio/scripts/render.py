@@ -41,6 +41,7 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from rich.table import Table
 from torch import Tensor
 from typing_extensions import Annotated
+from simple_parsing.helpers import list_field
 
 from nerfstudio.cameras.camera_paths import get_interpolated_camera_path, get_path_from_json, get_spiral_path
 from nerfstudio.cameras.cameras import Cameras, CameraType, RayBundle
@@ -717,7 +718,7 @@ class DatasetRender(BaseRender):
     """Split to render."""
     rendered_output_names: Optional[List[str]] = field(default_factory=lambda: None)
     """Name of the renderer outputs to use. rgb, depth, raw-depth, gt-rgb etc. By default all outputs are rendered."""
-    idx = [0, 1, 2, 3, 4, 5, 9]
+    idx: List[int] = list_field(0,)
     render_subset: bool = True
 
     def main(self):

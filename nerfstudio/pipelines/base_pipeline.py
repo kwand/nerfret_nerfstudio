@@ -254,12 +254,13 @@ class VanillaPipeline(Pipeline):
         world_size: int = 1,
         local_rank: int = 0,
         grad_scaler: Optional[GradScaler] = None,
+        training: bool = False,
     ):
         super().__init__()
         self.config = config
         self.test_mode = test_mode
         self.datamanager: DataManager = config.datamanager.setup(
-            device=device, test_mode=test_mode, world_size=world_size, local_rank=local_rank
+            device=device, test_mode=test_mode, world_size=world_size, local_rank=local_rank, training=training,
         )
         # TODO make cleaner
         seed_pts = None

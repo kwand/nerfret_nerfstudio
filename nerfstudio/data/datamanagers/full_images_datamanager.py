@@ -87,6 +87,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         test_mode: Literal["test", "val", "inference"] = "val",
         world_size: int = 1,
         local_rank: int = 0,
+        training: bool = False,
         **kwargs,
     ):
         self.config = config
@@ -115,7 +116,8 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
                 style="bold yellow",
             )
             self.config.cache_images = "cpu"
-        self.cached_train, self.cached_eval = self.cache_images(self.config.cache_images)
+        if training:
+            self.cached_train, self.cached_eval = self.cache_images(self.config.cache_images)
         self.exclude_batch_keys_from_device = self.train_dataset.exclude_batch_keys_from_device
         if self.config.masks_on_gpu is True:
             self.exclude_batch_keys_from_device.remove("mask")
@@ -307,15 +309,26 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         if len(self.train_unseen_cameras) == 0:
             self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
 
-        data = deepcopy(self.cached_train[image_idx])
-        data["image"] = data["image"].to(self.device)
+        data = self.cached_train[image_idx]
+        image = data["image"].to(self.device)
 
         assert len(self.train_dataset.cameras.shape) == 1, "Assumes single batch dimension"
         camera = self.train_dataset.cameras[image_idx : image_idx + 1].to(self.device)
         if camera.metadata is None:
             camera.metadata = {}
         camera.metadata["cam_idx"] = image_idx
-        return camera, data
+        return camera, {"image_idx": data["image_idx"], "image": image}
+
+        # Gavin: this is the original nerfstudio implementation, which involves an unnecessary deepcopy
+        # data = deepcopy(self.cached_train[image_idx])
+        # data["image"] = data["image"].to(self.device)
+
+        # assert len(self.train_dataset.cameras.shape) == 1, "Assumes single batch dimension"
+        # camera = self.train_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+        # if camera.metadata is None:
+        #     camera.metadata = {}
+        # camera.metadata["cam_idx"] = image_idx
+        # return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:
         """Returns the next evaluation batch
@@ -325,6 +338,15 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         # Make sure to re-populate the unseen cameras list if we have exhausted it
         if len(self.eval_unseen_cameras) == 0:
             self.eval_unseen_cameras = [i for i in range(len(self.eval_dataset))]
+        
+        data = self.cached_eval[image_idx]
+        image = data["image"].to(self.device)
+
+        assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"
+        camera = self.eval_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+        return camera, {"image_idx": data["image_idx"], "image": image}
+        
+        # Gavin: this is the original nerfstudio implementation, which involves an unnecessary deepcopy
         data = deepcopy(self.cached_eval[image_idx])
         data["image"] = data["image"].to(self.device)
         assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"
@@ -341,6 +363,15 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         # Make sure to re-populate the unseen cameras list if we have exhausted it
         if len(self.eval_unseen_cameras) == 0:
             self.eval_unseen_cameras = [i for i in range(len(self.eval_dataset))]
+            
+        data = self.cached_eval[image_idx]
+        image = data["image"].to(self.device)
+
+        assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"
+        camera = self.eval_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+        return camera, {"image_idx": data["image_idx"], "image": image}
+        
+        # Gavin: this is the original nerfstudio implementation, which involves an unnecessary deepcopy
         data = deepcopy(self.cached_eval[image_idx])
         data["image"] = data["image"].to(self.device)
         assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"

@@ -156,6 +156,7 @@ class Trainer:
             world_size=self.world_size,
             local_rank=self.local_rank,
             grad_scaler=self.grad_scaler,
+            training=True,
         )
         self.optimizers = self.setup_optimizers()
 

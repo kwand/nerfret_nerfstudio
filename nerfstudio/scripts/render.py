@@ -928,7 +928,11 @@ class LERFRender(BaseRender):
     trained_index_fp: Path = None
     """Location of the trained index"""
     clip_scales: List[float] = field(default_factory=lambda: [1.0])
-    
+    """Scales to use for the clip embeds"""
+    train_faiss_during_render: bool = False
+    """Whether to train the faiss index during render, instead of using pre-trained"""
+    faiss_index_mode: str = None
+    """Faiss index mode from the database"""
 
     @staticmethod
     def _get_image_idx(filename, images_root):
@@ -943,9 +947,16 @@ class LERFRender(BaseRender):
         
         import faiss
         if "faiss-clip_embeds" in self.rendered_output_names:
-            self._faiss_index = faiss.read_index(self.trained_index_fp)
+            if self.train_faiss_during_render:
+                self._faiss_index = faiss.index_factory(512, self.faiss_index_mode, faiss.METRIC_INNER_PRODUCT)
+                self._faiss_index_trained = False
+            else:
+                self._faiss_index = faiss.read_index(self.trained_index_fp)
+                self._faiss_index_trained = True
             self._faiss_idx_count = 0 
             self._faiss_image_to_idx_dict = {}
+        else:
+            self.train_faiss_during_render = False
             
         config, pipeline, _, _ = eval_setup(
             self.load_config,
@@ -1024,6 +1035,19 @@ class LERFRender(BaseRender):
                         outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
 
                     progress.update(task_id=0, description=f"(LERF: finished rendering {image_idx=}...)")
+
+                    # # Convert to float16. Does not work with PQ indexes
+                    # outputs["clip_embeds"] = outputs["clip_embeds"].to(torch.float16)
+
+                    # Use the first render as training embeddings
+                    if self.train_faiss_during_render and not self._faiss_index_trained:
+                        progress.update(task_id=0, description=f"(LERF: Training faiss index. Using {image_idx=} as training embeddings...)")
+                        train_embs = outputs["clip_embeds"].cpu().numpy()
+                        train_embs = train_embs.reshape(-1, train_embs.shape[-1])
+                        faiss.normalize_L2(train_embs)
+                        self._faiss_index.train(train_embs)
+
+                        self._faiss_index_trained = True
 
                     VALID_OUTPUTS = (
                         list(outputs.keys())
@@ -1192,7 +1216,7 @@ class LERFRenderCameraPath(BaseRender):
     """Filename of the camera path to render."""
     output_path: Path = None
     """Path to output video file."""
-    rendered_output_names: Optional[List[str]] = field(default_factory=lambda: None)
+    rendered_output_names: Optional[List[str]] = field(default_factory=None)
     """Name of the renderer outputs to use. rgb, depth, raw-depth, raw-clip_embeds. By default all outputs are rendered."""
     avg_pool: bool = False
     """Whether to average pool the clip_embeds"""
@@ -1201,6 +1225,11 @@ class LERFRenderCameraPath(BaseRender):
     trained_index_fp: Path = None
     """Location of the trained faiss index"""
     clip_scales: List[float] = field(default_factory=lambda: [1.0])
+    """Scales to use for the clip_embeds"""
+    train_faiss_during_render: bool = False
+    """Whether to train the faiss index during render, instead of using pre-trained"""
+    faiss_index_mode: str = None
+    """Faiss index mode from the database"""
 
     def main(self) -> None:
         """Main function."""
@@ -1208,7 +1237,12 @@ class LERFRenderCameraPath(BaseRender):
 
         import faiss
         if "faiss-clip_embeds" in self.rendered_output_names:
-            self._faiss_index = faiss.read_index(self.trained_index_fp)
+            if self.train_faiss_during_render:
+                self._faiss_index_is_trained = False
+                self._faiss_index = faiss.index_factory(512, self.faiss_index_mode, faiss.METRIC_INNER_PRODUCT)
+            else:
+                self._faiss_index = faiss.read_index(self.trained_index_fp)
+                self._faiss_index_is_trained = True
             self._faiss_idx_count = 0 
             self._faiss_image_to_idx_dict = {}
 
@@ -1262,6 +1296,16 @@ class LERFRenderCameraPath(BaseRender):
 
                 if self.avg_pool:
                     outputs["clip_embeds"] = torch.nn.functional.avg_pool2d(outputs["clip_embeds"].permute(2, 0, 1), self.avg_pool_kernel_size).permute(1, 2, 0)
+
+                # Use the first render as training embeddings
+                if self.train_faiss_during_render and self._faiss_index_is_trained is False:
+                    train_embs = outputs["clip_embeds"].cpu().numpy()
+                    train_embs = train_embs.reshape(-1, train_embs.shape[-1])
+
+                    faiss.normalize_L2(train_embs)
+                    self._faiss_index.train(train_embs)
+
+                    self._faiss_index_is_trained = True
 
                 VALID_OUTPUTS = (
                     list(outputs.keys())

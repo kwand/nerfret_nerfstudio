@@ -32,6 +32,9 @@ from nerfstudio.utils import writer
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.viewer.viewer import Viewer as ViewerState
 from nerfstudio.viewer_legacy.server.viewer_state import ViewerLegacyState
+from nerfstudio.cameras.camera_paths import get_path_from_json
+import json
+
 
 
 @dataclass
@@ -56,6 +59,15 @@ class RunViewer:
     vis: Literal["viewer", "viewer_legacy"] = "viewer"
     """Type of viewer"""
 
+    use_cameras_from_json: bool=False
+    """Whether to use cameras from JSON file"""
+    
+    cameras1: str=""
+    cameras2: str=""
+    color1: str=""
+    color2: str=""
+    """ Camera JSON file paths and colors for cameras 1 and 2"""
+
     def main(self) -> None:
         """Main function."""
         config, pipeline, _, step = eval_setup(
@@ -69,7 +81,16 @@ class RunViewer:
         config.viewer = self.viewer.as_viewer_config()
         config.viewer.num_rays_per_chunk = num_rays_per_chunk
 
-        _start_viewer(config, pipeline, step)
+        camera_json_path = []
+        colors = []
+        if self.use_cameras_from_json:
+            if self.cameras1:
+                camera_json_path.append(self.cameras1)
+                colors.append(self.color1)
+            if self.cameras2:
+                camera_json_path.append(self.cameras2)
+                colors.append(self.color2)
+        _start_viewer(config, pipeline, step, self.use_cameras_from_json, camera_json_path, colors)
 
     def save_checkpoint(self, *args, **kwargs):
         """
@@ -77,7 +98,7 @@ class RunViewer:
         """
 
 
-def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int):
+def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int, use_cameras_from_json: bool = False, camera_json_paths: list = [], colors: list = []):
     """Starts the viewer
 
     Args:
@@ -112,10 +133,27 @@ def _start_viewer(config: TrainerConfig, pipeline: Pipeline, step: int):
     writer.setup_local_writer(config.logging, max_iter=config.max_num_iterations, banner_messages=banner_messages)
 
     assert viewer_state and pipeline.datamanager.train_dataset
+
+    cameras_list = []
+    colorsrgb = []
+    if use_cameras_from_json:
+        if len(camera_json_paths) == 0:
+            raise ValueError("camera_json_paths is empty")
+        # Load JSON file into dictionary
+        for path in camera_json_paths:
+            camera_path_json = json.load(open(path))
+            # Convert dictionary to Cameras instance
+            cameras = get_path_from_json(camera_path_json)
+            cameras_list.append(cameras)
+        for color in colors:
+            colorsrgb.append(tuple(map(int, color.split(','))))
+
     viewer_state.init_scene(
         train_dataset=pipeline.datamanager.train_dataset,
         train_state="completed",
         eval_dataset=pipeline.datamanager.eval_dataset,
+        cameras_list=cameras_list,
+        colors=colorsrgb,
     )
     if isinstance(viewer_state, ViewerLegacyState):
         viewer_state.viser_server.set_training_state("completed")

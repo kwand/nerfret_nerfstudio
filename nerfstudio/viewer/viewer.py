@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Manage the state of the viewer """
+"""Manage the state of the viewer"""
+
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from pathlib import Path
@@ -27,6 +29,7 @@ import viser.theme
 import viser.transforms as vtf
 from typing_extensions import assert_never
 
+from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.cameras import CameraType
 from nerfstudio.configs import base_config as cfg
@@ -209,12 +212,22 @@ class Viewer:
         # Keep track of the pointers to generated GUI folders, because each generated folder holds a unique ID.
         viewer_gui_folders = dict()
 
+        def prev_cb_wrapper(prev_cb):
+            # We wrap the callbacks in the train_lock so that the callbacks are thread-safe with the
+            # concurrently executing render thread. This may block rendering, however this can be necessary
+            # if the callback uses get_outputs internally.
+            def cb_lock(element):
+                with self.train_lock if self.train_lock is not None else contextlib.nullcontext():
+                    prev_cb(element)
+
+            return cb_lock
+
         def nested_folder_install(folder_labels: List[str], prev_labels: List[str], element: ViewerElement):
             if len(folder_labels) == 0:
                 element.install(self.viser_server)
                 # also rewire the hook to rerender
                 prev_cb = element.cb_hook
-                element.cb_hook = lambda element: [prev_cb(element), self._trigger_rerender()]
+                element.cb_hook = lambda element: [prev_cb_wrapper(prev_cb)(element), self._trigger_rerender()]
             else:
                 # recursively create folders
                 # If the folder name is "Custom Elements/a/b", then:
@@ -305,6 +318,7 @@ class Viewer:
                 fov=self.render_tab_state.preview_fov,
                 aspect=self.render_tab_state.preview_aspect,
                 c2w=c2w,
+                time=self.render_tab_state.preview_time,
                 camera_type=CameraType.PERSPECTIVE
                 if camera_type == "Perspective"
                 else CameraType.FISHEYE
@@ -413,6 +427,8 @@ class Viewer:
         train_dataset: InputDataset,
         train_state: Literal["training", "paused", "completed"],
         eval_dataset: Optional[InputDataset] = None,
+        cameras_list: Optional[List[Cameras]] = [],
+        colors: Optional[List[tuple]] = [],
     ) -> None:
         """Draw some images and the scene aabb in the viewer.
 
@@ -424,39 +440,79 @@ class Viewer:
         self.camera_handles: Dict[int, viser.CameraFrustumHandle] = {}
         self.original_c2w: Dict[int, np.ndarray] = {}
         image_indices = self._pick_drawn_image_idxs(len(train_dataset))
-        for idx in image_indices:
-            image = train_dataset[idx]["image"]
-            camera = train_dataset.cameras[idx]
-            image_uint8 = (image * 255).detach().type(torch.uint8)
-            image_uint8 = image_uint8.permute(2, 0, 1)
+        if not cameras_list or len(cameras_list) == 0:
+            for idx in image_indices:
+                image = train_dataset[idx]["image"]
+                camera = train_dataset.cameras[idx]
+                image_uint8 = (image * 255).detach().type(torch.uint8)
+                image_uint8 = image_uint8.permute(2, 0, 1)
 
-            # torchvision can be slow to import, so we do it lazily.
-            import torchvision
+                # torchvision can be slow to import, so we do it lazily.
+                import torchvision
 
-            image_uint8 = torchvision.transforms.functional.resize(image_uint8, 100, antialias=None)  # type: ignore
-            image_uint8 = image_uint8.permute(1, 2, 0)
-            image_uint8 = image_uint8.cpu().numpy()
-            c2w = camera.camera_to_worlds.cpu().numpy()
-            R = vtf.SO3.from_matrix(c2w[:3, :3])
-            R = R @ vtf.SO3.from_x_radians(np.pi)
-            camera_handle = self.viser_server.add_camera_frustum(
-                name=f"/cameras/camera_{idx:05d}",
-                fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
-                scale=self.config.camera_frustum_scale,
-                aspect=float(camera.cx[0] / camera.cy[0]),
-                image=image_uint8,
-                wxyz=R.wxyz,
-                position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
-            )
+                image_uint8 = torchvision.transforms.functional.resize(image_uint8, 100, antialias=None)  # type: ignore
+                image_uint8 = image_uint8.permute(1, 2, 0)
+                image_uint8 = image_uint8.cpu().numpy()
 
-            @camera_handle.on_click
-            def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
-                with event.client.atomic():
-                    event.client.camera.position = event.target.position
-                    event.client.camera.wxyz = event.target.wxyz
+                c2w = camera.camera_to_worlds.cpu().numpy()
+                R = vtf.SO3.from_matrix(c2w[:3, :3])
+                R = R @ vtf.SO3.from_x_radians(np.pi)
+                camera_handle = self.viser_server.add_camera_frustum(
+                    name=f"/cameras/camera_{idx:05d}",
+                    fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
+                    scale=self.config.camera_frustum_scale,
+                    aspect=float(camera.cx[0] / camera.cy[0]),
+                    image=image_uint8,
+                    wxyz=R.wxyz,
+                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
+                )
 
-            self.camera_handles[idx] = camera_handle
-            self.original_c2w[idx] = c2w
+                @camera_handle.on_click
+                def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
+                    with event.client.atomic():
+                        event.client.camera.position = event.target.position
+                        event.client.camera.wxyz = event.target.wxyz
+
+                self.camera_handles[idx] = camera_handle
+                self.original_c2w[idx] = c2w
+        else:
+            if not colors or len(colors) != len(cameras_list):
+                raise ValueError("colors must be provided for each camera list")
+            for i in range(len(cameras_list)):
+                cameras = cameras_list[i]
+                color = colors[i]
+                positions = []
+                for idx in range(len(cameras)):
+                    camera = cameras[idx]
+                    image_uint8 = np.ones((1000, 1000, 3), dtype=np.uint8)
+                    image_uint8 = image_uint8 * color
+
+                    c2w = camera.camera_to_worlds.cpu().numpy()
+                    R = vtf.SO3.from_matrix(c2w[:3, :3])
+                    R = R @ vtf.SO3.from_x_radians(np.pi)
+                    camera_handle = self.viser_server.add_camera_frustum(
+                        name=f"/cameras/camera_{idx + i * len(cameras_list[0]):05d}",
+                        fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
+                        scale=self.config.camera_frustum_scale,
+                        aspect=float(camera.cx[0] / camera.cy[0]),
+                        image=image_uint8,
+                        wxyz=R.wxyz,
+                        position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
+                        color=color
+                    )
+                    # Turn position into tuple for viser
+                    positions.append(tuple(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO))
+                
+                    @camera_handle.on_click
+                    def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
+                        with event.client.atomic():
+                            event.client.camera.position = event.target.position
+                            event.client.camera.wxyz = event.target.wxyz
+
+                    self.camera_handles[idx + i * len(cameras_list[0])] = camera_handle
+                    self.original_c2w[idx + i * len(cameras_list[0])] = c2w
+                self.viser_server.add_spline_catmull_rom(f"camera_spline_{i}", tuple(positions), color=color)
+
 
         self.train_state = train_state
         self.train_util = 0.9

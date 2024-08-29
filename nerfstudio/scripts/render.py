@@ -65,6 +65,7 @@ from nerfstudio.utils.scripts import run_command
 import tables
 import pgzip
 
+from nerfstudio.field_components.spatial_distortions import SceneContraction
 
 
 def dda_ray_traversal_non_vectorized(origins, directions, depths, voxel_size, voxel_grid):
@@ -147,7 +148,7 @@ def dda_ray_traversal_non_vectorized(origins, directions, depths, voxel_size, vo
     
     return voxel_grid
 
-def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_grid):
+def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, coverage_grid):
     """
     Updates a 3D voxel grid based on ray intersections using the DDA algorithm.
     
@@ -156,7 +157,7 @@ def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_
     directions (torch.Tensor): A tensor of shape (N, 3) representing the directions of N rays.
     depths (torch.Tensor): A tensor of shape (N,) representing the maximum length of each ray.
     voxel_size (float): The size of each voxel.
-    voxel_grid (torch.Tensor): A tensor of shape (32, 32, 32) representing the voxel grid.
+    voxel_grid (torch.Tensor): A tensor of shape (n, n, n) representing the voxel grid. n is roughly 64.
     
     Returns:
     torch.Tensor: Updated voxel grid with intersected voxels marked.
@@ -165,7 +166,7 @@ def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_
     device = origins.device
     origins += 2 # Origins originally range from -1 to 1, so shift them to 1 to 3 
     N = origins.size(0)
-    voxel_grid_size = voxel_grid.size()
+    voxel_grid_size = coverage_grid.size()
     
     # Compute voxel dimensions
     voxel_dims = torch.tensor(voxel_grid_size, dtype=torch.float32, device=device)
@@ -202,7 +203,7 @@ def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_
                             (0 <= z) & (z < voxel_grid_size[2])
         
         # Update the voxel grid
-        voxel_grid[x[valid_voxels], y[valid_voxels], z[valid_voxels]] = 1
+        coverage_grid[x[valid_voxels], y[valid_voxels], z[valid_voxels]] = 1
 
         # Determine the next axis to traverse
         min_t_max = torch.min(t_max_x, torch.min(t_max_y, t_max_z))
@@ -226,12 +227,7 @@ def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_
                         (step_z > 0) & (z > max_z) | (step_z < 0) & (z < max_z)):
                 break
         
-    return voxel_grid
-
-
-
-
-
+    return coverage_grid
 
 
 def _render_trajectory_video(
@@ -275,8 +271,9 @@ def _render_trajectory_video(
 
     # JS CODE for Depth based scene coverage
     aabb = pipeline.datamanager.train_dataset.scene_box.aabb
-    voxel_size = 4 / 64 # scene is a 4x4x4 cube with 64x64x64 voxels
-    voxel_grid = torch.zeros(64, 64, 64).to(pipeline.device)
+    num_voxels = 64
+    voxel_size = 4 / num_voxels # scene is a 4x4x4 cube with 64x64x64 voxels. Gavin: how is this figured out?
+    coverage_grid = torch.zeros(num_voxels, num_voxels, num_voxels).to(pipeline.device)
 
     
     progress = Progress(
@@ -379,17 +376,20 @@ def _render_trajectory_video(
                         cam = cameras[camera_idx]
                         ray_bundle = cam.generate_rays(camera_indices=0, keep_shape=True, obb_box=obb_box)
 
-
-                        
                         # Make a copy of origins and directions to avoid modifying the original tensor
                         origins = ray_bundle.origins.reshape(-1, 3).clone()
                         directions = ray_bundle.directions.reshape(-1, 3).clone()
                         depths = outputs['depth'].reshape(-1)
 
-
                         # Get time taken to run dda_ray_traversal_vectorized
                         start = time.time()
-                        voxel_grid = dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, voxel_grid)
+                        coverage_grid = dda_ray_traversal_vectorized(
+                            origins=origins,
+                            directions=directions,
+                            depths=depths,
+                            voxel_size=voxel_size,
+                            coverage_grid=coverage_grid,
+                        )
                         end = time.time()
                         print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
 

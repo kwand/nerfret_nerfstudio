@@ -61,7 +61,7 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
-from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection
+from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection
 
 
 import tables
@@ -275,7 +275,7 @@ def _render_trajectory_video(
     aabb = pipeline.datamanager.train_dataset.scene_box.aabb
     num_voxels = 64
     voxel_size = 4 / num_voxels # scene is a 4x4x4 cube with 64x64x64 voxels. Gavin: how is this figured out?
-    coverage_grid = torch.zeros(num_voxels, num_voxels, num_voxels).to(pipeline.device)
+    coverage_grid = torch.zeros(num_voxels, num_voxels, num_voxels, 6, dtype=bool).to(pipeline.device)
 
     
     progress = Progress(
@@ -384,16 +384,20 @@ def _render_trajectory_video(
                         depths = outputs['depth'].reshape(-1)
 
                         # Get time taken to run dda_ray_traversal_vectorized
-                        start = time.time()
-                        coverage_grid = ray_voxel_intersection(
+                        # start = time.time()
+                        coverage_grid = direction_ray_voxel_intersection(
                             origins=origins,
                             directions=directions,
                             depths=depths,
                             voxel_size=voxel_size,
-                            coverage_grid=coverage_grid,
+                            voxel_grid=coverage_grid,
                         )
-                        end = time.time()
-                        print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
+                        # end = time.time()
+                        # #print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
+                        # # coverage_sum = coverage_grid.sum()
+                        # # total_voxels = (num_voxels ** 3) * 6
+                        # # print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
+                        # dummy = 1
 
 
                 render_image = []
@@ -486,6 +490,12 @@ def _render_trajectory_video(
     else:
         table.add_row("Images", str(output_image_dir))
     CONSOLE.print(Panel(table, title="[bold][green]:tada: Render Complete :tada:[/bold]", expand=False))
+
+    # Compute total coverage
+    total_coverage = torch.sum(coverage_grid).item()
+    total_voxels = (num_voxels ** 3) * 6
+    coverage_percentage = (total_coverage / total_voxels) * 100
+    print("Total Coverage Percentage:", coverage_percentage)
 
 
 def insert_spherical_metadata_into_file(

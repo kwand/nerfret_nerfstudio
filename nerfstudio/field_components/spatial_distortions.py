@@ -198,6 +198,9 @@ def ray_voxel_intersection(origins, directions, depths, voxel_size, voxel_grid):
     return voxel_grid
 
 def direction_ray_voxel_intersection(origins, directions, depths, voxel_size, voxel_grid):
+
+    device = directions.device
+    
     # voxel_grid is 64x64x64x6 (6 faces of the voxel)
     voxel_face_vectors = torch.tensor([
         [1, 0, 0],  # right
@@ -206,26 +209,26 @@ def direction_ray_voxel_intersection(origins, directions, depths, voxel_size, vo
         [0, -1, 0],  # bottom
         [0, 0, 1],  # front
         [0, 0, -1],  # back
-    ]).to(directions.device)
+    ], dtype=directions.dtype).to(device)
 
     grid_delta = voxel_size
     grid_voxel_num = voxel_grid.shape[0]
     grid_line_num = grid_voxel_num + 1
-    grid_locations_warpped_1d = torch.linspace(-2, 2, grid_line_num)
+    grid_locations_warpped_1d = torch.linspace(-2, 2, grid_line_num).to(device)
 
     # the -2 and 2 at the end correspond to infinity in the uncontracted space
     # causing computation issues, so we use the middle of the last voxel as a proxy
     grid_locations_warpped_1d[0] = grid_locations_warpped_1d[0] + grid_delta / 2
     grid_locations_warpped_1d[-1] = grid_locations_warpped_1d[-1] - grid_delta / 2
 
-    grid_locations_warpped = torch.zeros((grid_line_num, 3))
+    grid_locations_warpped = torch.zeros((grid_line_num, 3)).to(device)
     grid_locations_warpped[:, 0] = grid_locations_warpped_1d
 
     grid_locations_uncontracted = SceneContraction(order=torch.inf).undo_forward(grid_locations_warpped)
     grid_locations_uncontracted_1d = grid_locations_uncontracted[:, 0]
 
     _, max_direction_indices = torch.max(torch.abs(directions), dim=1)
-    batch_indices = torch.arange(0, origins.shape[0])
+    batch_indices = torch.arange(0, origins.shape[0]).to(device)
 
     # fastest moving direction is x, calculate where x hits the grid
     all_t = (grid_locations_uncontracted_1d.unsqueeze(1) - \
@@ -255,24 +258,35 @@ def direction_ray_voxel_intersection(origins, directions, depths, voxel_size, vo
     grid_location_zero_to_pos_int_end_excluded = grid_location_zero_to_pos_int[:, 1:-1, :]
     moved_by_1_in_max_direction = grid_location_zero_to_pos_int_end_excluded.clone()
     moved_by_1_in_max_direction[batch_indices[:, None], :, max_direction_indices[:, None]] -= 1
-
-    # these are the grid voxels (same or below the max direction intersection line)
-    # end is excluded because the intersection voxel at infinity should not be included
-    grid_location_zero_to_pos_int_end_excluded = grid_location_zero_to_pos_int[:, 1:-1, :]
-    moved_by_1_in_max_direction = grid_location_zero_to_pos_int_end_excluded.clone()
-    moved_by_1_in_max_direction[batch_indices[:, None], :, max_direction_indices[:, None]] -= 1
-    
+    dirxfaces = torch.matmul(directions, voxel_face_vectors.T) > 0
     assert torch.all(grid_location_zero_to_pos_int >= 0), f"{grid_location_zero_to_pos_int.min()}"
     assert torch.all(moved_by_1_in_max_direction >= 0), f"{moved_by_1_in_max_direction.min()}"
     
-    # fill in grid voxels above the intersection line
-    mask_above = (all_t > 0 & all_t < depths).unsqueeze(-1).expand_as(grid_location_zero_to_pos_int)
-    occupied_above = grid_location_zero_to_pos_int[mask_above].view(-1, 3).t()
-    voxel_grid.index_put_(tuple(occupied_above), torch.tensor(1, dtype=torch.bool), accumulate=False)
+    num_rays = origins.shape[0]
+    # all 6 sides of voxel
+    grid_location_zero_to_pos_int_repeated = grid_location_zero_to_pos_int.repeat_interleave(6, dim=1)
+    faces = torch.arange(6).repeat(grid_location_zero_to_pos_int.shape[1]).unsqueeze(0).unsqueeze(2).repeat(num_rays, 1, 1).to(device)
+    grid_location_zero_to_pos_int_faces = torch.cat([grid_location_zero_to_pos_int_repeated, faces], dim=2)
 
+    moved_by_1_in_max_direction_repeated = moved_by_1_in_max_direction.repeat_interleave(6, dim=1)
+    faces = torch.arange(6).repeat(moved_by_1_in_max_direction.shape[1]).unsqueeze(0).unsqueeze(2).repeat(num_rays, 1, 1).to(device)
+    moved_by_1_in_max_direction_faces = torch.cat([moved_by_1_in_max_direction_repeated, faces], dim=2)
+
+    all_t_repeated = all_t.repeat_interleave(6, dim=1)
+    dirxfaces_repeated = dirxfaces.repeat(1, grid_location_zero_to_pos_int.shape[1])
+
+    depths_repeated = depths.unsqueeze(1).repeat(1, grid_location_zero_to_pos_int.shape[1]).repeat(1, 6)
+
+    # fill in grid voxels above the intersection line
+    mask_above = ((all_t_repeated > 0) & (all_t_repeated < depths_repeated) & dirxfaces_repeated).unsqueeze(-1).expand_as(grid_location_zero_to_pos_int_faces)
+    occupied_above = grid_location_zero_to_pos_int_faces[mask_above].view(-1, 4)
+    
+    occupied_above = occupied_above.T
+    voxel_grid.index_put_(tuple(occupied_above), torch.tensor(1, dtype=torch.bool), accumulate=False)
+    
     # fill in grid voxels below the intersection line
-    mask_below = mask_above[:, 1:-1, :]
-    occupied_below = moved_by_1_in_max_direction[mask_below].view(-1, 3).t()
+    mask_below = mask_above[:, 6:-6, :]
+    occupied_below = moved_by_1_in_max_direction_faces[mask_below].view(-1, 4).t()
     voxel_grid.index_put_(tuple(occupied_below), torch.tensor(1, dtype=torch.bool), accumulate=False)
 
     return voxel_grid 

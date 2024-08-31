@@ -61,6 +61,8 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
+from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection
+
 
 import tables
 import pgzip
@@ -383,7 +385,7 @@ def _render_trajectory_video(
 
                         # Get time taken to run dda_ray_traversal_vectorized
                         start = time.time()
-                        coverage_grid = dda_ray_traversal_vectorized(
+                        coverage_grid = ray_voxel_intersection(
                             origins=origins,
                             directions=directions,
                             depths=depths,

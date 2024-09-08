@@ -226,6 +226,26 @@ class NerfactoField(Field):
         density = self.average_init_density * trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
         return density, base_mlp_out
+    
+    def get_density_from_warped_positions(self, positions: Tensor) -> Tuple[Tensor, Tensor]:
+        """Computes and returns the densities."""
+        # Make sure the tcnn gets inputs between 0 and 1.
+        selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
+        positions = positions * selector[..., None]
+        self._sample_locations = positions
+        if not self._sample_locations.requires_grad:
+            self._sample_locations.requires_grad = True
+        positions_flat = positions.view(-1, 3)
+        h = self.mlp_base(positions_flat).view(*positions.shape[:-1], -1)
+        density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+        self._density_before_activation = density_before_activation
+
+        # Rectifying the density with an exponential is much more stable than a ReLU or
+        # softplus, because it enables high post-activation (float32) density outputs
+        # from smaller internal (float16) parameters.
+        density = self.average_init_density * trunc_exp(density_before_activation.to(positions))
+        density = density * selector[..., None]
+        return density, base_mlp_out
 
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None

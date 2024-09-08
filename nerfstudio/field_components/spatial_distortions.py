@@ -291,6 +291,27 @@ def direction_ray_voxel_intersection(origins, directions, depths, voxel_size, vo
 
     return voxel_grid 
 
+def get_voxel_grid_positions(voxel_size, voxel_grid):
+    grid_delta = voxel_size
+    grid_voxel_num = voxel_grid.shape[0]
+    grid_line_num = grid_voxel_num + 1
+    grid_locations_warpped_1d = torch.linspace(-2, 2, grid_line_num)
+
+    # Orient grid locations to be in the center of the voxel, excluding the last voxel
+    grid_locations_warpped_1d = grid_locations_warpped_1d[:-1] + grid_delta / 2
+
+    grid_locations_warpped = torch.zeros((grid_voxel_num, 3))
+    grid_locations_warpped[:, 0] = grid_locations_warpped_1d
+
+    grid_locations_uncontracted = SceneContraction(order=torch.inf).undo_forward(grid_locations_warpped)
+    grid_locations_uncontracted_1d = grid_locations_uncontracted[:, 0]
+
+    # use meshgrid to get all the grid locations of 64x64x64 voxels
+    locs_x, locs_y, locz_z = torch.meshgrid(grid_locations_uncontracted_1d, grid_locations_uncontracted_1d, grid_locations_uncontracted_1d)
+    all_grid_locations = torch.stack([locs_x, locs_y, locz_z], dim=-1)
+
+    return all_grid_locations
+
 def main():
     voxel_face_vectors = torch.tensor([
         [1, 0, 0],  # right

@@ -61,7 +61,7 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
-from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection
+from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection, get_voxel_grid_positions
 
 
 import tables
@@ -386,9 +386,9 @@ def _render_trajectory_video(
                         # Get time taken to run dda_ray_traversal_vectorized
                         # start = time.time()
                         coverage_grid = direction_ray_voxel_intersection(
-                            origins=origins,
-                            directions=directions,
-                            depths=depths,
+                            origins = origins,
+                            directions = directions,
+                            depths = depths,
                             voxel_size=voxel_size,
                             voxel_grid=coverage_grid,
                         )
@@ -397,7 +397,7 @@ def _render_trajectory_video(
                         # # coverage_sum = coverage_grid.sum()
                         # # total_voxels = (num_voxels ** 3) * 6
                         # # print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
-                        # dummy = 1
+                        dummy = 1
 
 
                 render_image = []
@@ -475,6 +475,33 @@ def _render_trajectory_video(
                             )
                         )
                     writer.add_image(render_image)
+                    
+        modelfield = pipeline.model.field
+        grid_positions = get_voxel_grid_positions(voxel_size, coverage_grid)
+        grid_positions = grid_positions.to(pipeline.device)
+        densitys, _ = modelfield.get_density_from_warped_positions(grid_positions)
+        occupied = densitys >= 0.5
+        occupied = occupied.squeeze(-1)
+        coverage_grid_unoriented = coverage_grid[:, :, :, 0] \
+            | coverage_grid[:, :, :, 1] \
+            | coverage_grid[:, :, :, 2] \
+            | coverage_grid[:, :, :, 3] \
+            | coverage_grid[:, :, :, 4] \
+            | coverage_grid[:, :, :, 5]
+        # Check overlap between occupied voxels and covered voxels
+        overlap = occupied & coverage_grid_unoriented
+        overlap_sum = overlap.sum()
+        coverage_sum = coverage_grid_unoriented.sum()
+        oriented_sum = coverage_grid.sum()
+        occupied_sum = occupied.sum()
+        total_voxels = (num_voxels ** 3)
+        total_voxel_faces = total_voxels * 6
+        print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
+        print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
+        print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
+        print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
+        dummy = 1
+        
 
     table = Table(
         title=None,

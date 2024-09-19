@@ -384,19 +384,20 @@ def _render_trajectory_video(
                         depths = outputs['depth'].reshape(-1)
 
                         # Get time taken to run dda_ray_traversal_vectorized
-                        # start = time.time()
-                        coverage_grid = direction_ray_voxel_intersection(
-                            origins = origins,
-                            directions = directions,
-                            depths = depths,
-                            voxel_size=voxel_size,
-                            voxel_grid=coverage_grid,
-                        )
-                        # end = time.time()
-                        # #print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
-                        # # coverage_sum = coverage_grid.sum()
-                        # # total_voxels = (num_voxels ** 3) * 6
-                        # # print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
+                        start = time.time()
+                        if True:
+                            coverage_grid = direction_ray_voxel_intersection(
+                                origins = origins,
+                                directions = directions,
+                                depths = depths,
+                                voxel_size=voxel_size,
+                                voxel_grid=coverage_grid,
+                            )
+                        end = time.time()
+                        print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
+                        coverage_sum = coverage_grid.sum()
+                        total_voxels = (num_voxels ** 3) * 6
+                        print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
                         dummy = 1
 
 

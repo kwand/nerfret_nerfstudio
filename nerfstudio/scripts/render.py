@@ -44,6 +44,7 @@ from torch import Tensor
 from typing_extensions import Annotated
 from simple_parsing.helpers import list_field
 
+from runner_utils.runner_trainers import NerfactoTrainerConfig
 from nerfstudio.cameras.camera_paths import get_interpolated_camera_path, get_path_from_json, get_spiral_path
 from nerfstudio.cameras.cameras import Cameras, CameraType, RayBundle
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig
@@ -476,31 +477,32 @@ def _render_trajectory_video(
                         )
                     writer.add_image(render_image)
                     
-        modelfield = pipeline.model.field
-        grid_positions = get_voxel_grid_positions(voxel_size, coverage_grid)
-        grid_positions = grid_positions.to(pipeline.device)
-        densitys, _ = modelfield.get_density_from_warped_positions(grid_positions)
-        occupied = densitys >= 0.5
-        occupied = occupied.squeeze(-1)
-        coverage_grid_unoriented = coverage_grid[:, :, :, 0] \
-            | coverage_grid[:, :, :, 1] \
-            | coverage_grid[:, :, :, 2] \
-            | coverage_grid[:, :, :, 3] \
-            | coverage_grid[:, :, :, 4] \
-            | coverage_grid[:, :, :, 5]
-        # Check overlap between occupied voxels and covered voxels
-        overlap = occupied & coverage_grid_unoriented
-        overlap_sum = overlap.sum()
-        coverage_sum = coverage_grid_unoriented.sum()
-        oriented_sum = coverage_grid.sum()
-        occupied_sum = occupied.sum()
-        total_voxels = (num_voxels ** 3)
-        total_voxel_faces = total_voxels * 6
-        print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
-        print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
-        print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
-        print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
-        dummy = 1
+        if isinstance(pipeline.model, NerfactoTrainerConfig):
+            modelfield = pipeline.model.field
+            grid_positions = get_voxel_grid_positions(voxel_size, coverage_grid)
+            grid_positions = grid_positions.to(pipeline.device)
+            densitys, _ = modelfield.get_density_from_warped_positions(grid_positions)
+            occupied = densitys >= 0.5
+            occupied = occupied.squeeze(-1)
+            coverage_grid_unoriented = coverage_grid[:, :, :, 0] \
+                | coverage_grid[:, :, :, 1] \
+                | coverage_grid[:, :, :, 2] \
+                | coverage_grid[:, :, :, 3] \
+                | coverage_grid[:, :, :, 4] \
+                | coverage_grid[:, :, :, 5]
+            # Check overlap between occupied voxels and covered voxels
+            overlap = occupied & coverage_grid_unoriented
+            overlap_sum = overlap.sum()
+            coverage_sum = coverage_grid_unoriented.sum()
+            oriented_sum = coverage_grid.sum()
+            occupied_sum = occupied.sum()
+            total_voxels = (num_voxels ** 3)
+            total_voxel_faces = total_voxels * 6
+            print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
+            print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
+            print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
+            print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
+            dummy = 1
         
 
     table = Table(
@@ -518,11 +520,12 @@ def _render_trajectory_video(
         table.add_row("Images", str(output_image_dir))
     CONSOLE.print(Panel(table, title="[bold][green]:tada: Render Complete :tada:[/bold]", expand=False))
 
-    # Compute total coverage
-    total_coverage = torch.sum(coverage_grid).item()
-    total_voxels = (num_voxels ** 3) * 6
-    coverage_percentage = (total_coverage / total_voxels) * 100
-    print("Total Coverage Percentage:", coverage_percentage)
+    if isinstance(pipeline.model, NerfactoTrainerConfig):
+        # Compute total coverage
+        total_coverage = torch.sum(coverage_grid).item()
+        total_voxels = (num_voxels ** 3) * 6
+        coverage_percentage = (total_coverage / total_voxels) * 100
+        print("Total Coverage Percentage:", coverage_percentage)
 
 
 def insert_spherical_metadata_into_file(

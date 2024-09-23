@@ -163,16 +163,24 @@ class Model(nn.Module):
         """
 
     @torch.no_grad()
-    def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
+    def get_outputs_for_camera(
+            self,
+            camera: Cameras,
+            obb_box: Optional[OrientedBox] = None,
+            return_ray_bundle: bool = False,
+        ) -> Union[Dict[str, torch.Tensor], Tuple[Dict[str, torch.Tensor], RayBundle]]:
         """Takes in a camera, generates the raybundle, and computes the output of the model.
         Assumes a ray-based model.
 
         Args:
             camera: generates raybundle
         """
-        return self.get_outputs_for_camera_ray_bundle(
-            camera.generate_rays(camera_indices=0, keep_shape=True, obb_box=obb_box)
-        )
+        ray_bundle = camera.generate_rays(camera_indices=0, keep_shape=True, obb_box=obb_box)
+        outputs = self.get_outputs_for_camera_ray_bundle(ray_bundle)
+        if return_ray_bundle:
+            return outputs, ray_bundle
+        else:
+            return outputs
 
     @torch.no_grad()
     def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:

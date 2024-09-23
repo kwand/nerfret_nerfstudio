@@ -62,7 +62,7 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
-from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection, get_voxel_grid_positions
+from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection, get_voxel_grid_positions, DirectionRayVoxelIntersection
 
 
 import tables
@@ -273,11 +273,10 @@ def _render_trajectory_video(
     fps = len(cameras) / seconds
 
     # JS CODE for Depth based scene coverage
-    aabb = pipeline.datamanager.train_dataset.scene_box.aabb
-    num_voxels = 64
-    voxel_size = 4 / num_voxels # scene is a 4x4x4 cube with 64x64x64 voxels. Gavin: how is this figured out?
-    coverage_grid = torch.zeros(num_voxels, num_voxels, num_voxels, 6, dtype=bool).to(pipeline.device)
-
+    num_voxel = 32
+    side_length = 4.0
+    coverage_grid_class = DirectionRayVoxelIntersection(
+        num_voxel=num_voxel, side_length=side_length, device=cameras.camera_to_worlds.device)
     
     progress = Progress(
         TextColumn(":movie_camera: Rendering :movie_camera:"),
@@ -385,22 +384,19 @@ def _render_trajectory_video(
                         depths = outputs['depth'].reshape(-1)
 
                         # Get time taken to run dda_ray_traversal_vectorized
-                        start = time.time()
                         if True:
-                            coverage_grid = direction_ray_voxel_intersection(
+                            start = time.time()
+                            coverage_grid = coverage_grid_class.update_coverage_map(
                                 origins = origins,
                                 directions = directions,
                                 depths = depths,
-                                voxel_size=voxel_size,
-                                voxel_grid=coverage_grid,
                             )
-                        end = time.time()
-                        print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
-                        coverage_sum = coverage_grid.sum()
-                        total_voxels = (num_voxels ** 3) * 6
-                        print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
-                        dummy = 1
-
+                            end = time.time()
+                            print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
+                            coverage_sum = coverage_grid.sum()
+                            total_voxels = (num_voxel ** 3) * 6
+                            print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
+                            dummy = 1
 
                 render_image = []
                 for rendered_output_name in rendered_output_names:
@@ -1034,7 +1030,7 @@ class DatasetRender(BaseRender):
                             continue
 
                     with torch.no_grad():
-                        outputs = pipeline.model.get_outputs_for_camera(camera)
+                        outputs, camera_ray_bundle = pipeline.model.get_outputs_for_camera(camera, return_ray_bundle=True)
 
                     gt_batch = batch.copy()
                     gt_batch["rgb"] = gt_batch.pop("image")

@@ -62,7 +62,8 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
-from nerfstudio.field_components.spatial_distortions import ray_voxel_intersection, direction_ray_voxel_intersection, get_voxel_grid_positions, DirectionRayVoxelIntersection
+from nerfstudio.field_components.spatial_distortions import DirectionRayVoxelIntersection
+import nerfstudio.models.nerfacto as nerfacto
 
 
 import tables
@@ -249,6 +250,8 @@ def _render_trajectory_video(
     colormap_options: colormaps.ColormapOptions = colormaps.ColormapOptions(),
     render_nearest_camera=False,
     check_occlusions: bool = False,
+    do_coverage_map: bool = False,
+    coverage_map_num_voxel: int = 64,
 ) -> None:
     """Helper function to create a video of the spiral trajectory.
 
@@ -273,10 +276,18 @@ def _render_trajectory_video(
     fps = len(cameras) / seconds
 
     # JS CODE for Depth based scene coverage
-    num_voxel = 32
-    side_length = 4.0
-    coverage_grid_class = DirectionRayVoxelIntersection(
-        num_voxel=num_voxel, side_length=side_length, device=cameras.camera_to_worlds.device)
+    coverage_grid_class: Optional[DirectionRayVoxelIntersection] = None
+    if do_coverage_map:
+        ngr_model = None
+        if isinstance(pipeline.model, nerfacto.NerfactoModel):
+            ngr_model = pipeline.model
+        
+        coverage_grid_class = DirectionRayVoxelIntersection(
+            num_voxel=coverage_map_num_voxel,
+            device=cameras.camera_to_worlds.device,
+            do_orientation=True,
+            ngr_model=ngr_model,
+        )
     
     progress = Progress(
         TextColumn(":movie_camera: Rendering :movie_camera:"),
@@ -384,7 +395,7 @@ def _render_trajectory_video(
                         depths = outputs['depth'].reshape(-1)
 
                         # Get time taken to run dda_ray_traversal_vectorized
-                        if True:
+                        if do_coverage_map:
                             start = time.time()
                             coverage_grid = coverage_grid_class.update_coverage_map(
                                 origins = origins,
@@ -392,11 +403,9 @@ def _render_trajectory_video(
                                 depths = depths,
                             )
                             end = time.time()
-                            print(f"Time taken for dda_ray_traversal_vectorized: {end - start} seconds")
-                            coverage_sum = coverage_grid.sum()
-                            total_voxels = (num_voxel ** 3) * 6
-                            print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
-                            dummy = 1
+                            print()
+                            print(f"Camera id: {camera_idx}, Time: {end - start:.5f} sec")
+                            coverage_grid_class.report_stats()
 
                 render_image = []
                 for rendered_output_name in rendered_output_names:
@@ -473,33 +482,28 @@ def _render_trajectory_video(
                             )
                         )
                     writer.add_image(render_image)
-                    
-        if isinstance(pipeline.model, NerfactoTrainerConfig):
-            modelfield = pipeline.model.field
-            grid_positions = get_voxel_grid_positions(voxel_size, coverage_grid)
-            grid_positions = grid_positions.to(pipeline.device)
-            densitys, _ = modelfield.get_density_from_warped_positions(grid_positions)
-            occupied = densitys >= 0.5
-            occupied = occupied.squeeze(-1)
-            coverage_grid_unoriented = coverage_grid[:, :, :, 0] \
-                | coverage_grid[:, :, :, 1] \
-                | coverage_grid[:, :, :, 2] \
-                | coverage_grid[:, :, :, 3] \
-                | coverage_grid[:, :, :, 4] \
-                | coverage_grid[:, :, :, 5]
-            # Check overlap between occupied voxels and covered voxels
-            overlap = occupied & coverage_grid_unoriented
-            overlap_sum = overlap.sum()
-            coverage_sum = coverage_grid_unoriented.sum()
-            oriented_sum = coverage_grid.sum()
-            occupied_sum = occupied.sum()
-            total_voxels = (num_voxels ** 3)
-            total_voxel_faces = total_voxels * 6
-            print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
-            print(f"Coverage: {coverage_sum} / {total_voxels} ({coverage_sum / total_voxels * 100:.2f}%)")
-            print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
-            print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
-            dummy = 1
+
+        # dummy = 1
+        # if do_coverage_map and isinstance(pipeline.model, nerfacto.NerfactoModel):
+        #     modelfield = pipeline.model.field
+        #     grid_locations = coverage_grid_class.get_map_grid_locations()
+        #     densitys, _ = modelfield.get_density_from_warped_positions(grid_locations)
+        #     occupied = densitys >= 0.5
+        #     occupied = occupied.squeeze(-1)
+        #     coverage_grid_unoriented = coverage_grid_class.get_coverage_map_unoriented()
+        #     # Check overlap between occupied voxels and covered voxels
+        #     overlap = occupied & coverage_grid_unoriented
+        #     overlap_sum = overlap.sum()
+        #     coverage_with_orientation = coverage_grid_unoriented.sum()
+        #     oriented_sum = coverage_grid.sum()
+        #     occupied_sum = occupied.sum()
+        #     total_voxels = (num_voxels ** 3)
+        #     total_voxel_faces = total_voxels * 6
+        #     print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
+        #     print(f"Coverage: {coverage_with_orientation} / {total_voxels} ({coverage_with_orientation / total_voxels * 100:.2f}%)")
+        #     print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
+        #     print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
+        #     dummy = 1
         
 
     table = Table(
@@ -665,6 +669,12 @@ class BaseRender:
     """Whether to render the nearest training camera to the rendered camera."""
     check_occlusions: bool = False
     """If true, checks line-of-sight occlusions when computing camera distance and rejects cameras not visible to each other"""
+    
+    # from Gavin
+    do_coverage_map: bool = False
+    """Whether to compute coverage map"""
+    coverage_map_num_voxel = 64
+    """Number of voxels in coverage map"""
 
 
 @dataclass
@@ -731,6 +741,8 @@ class RenderCameraPath(BaseRender):
             colormap_options=self.colormap_options,
             render_nearest_camera=self.render_nearest_camera,
             check_occlusions=self.check_occlusions,
+            do_coverage_map=self.do_coverage_map,
+            coverage_map_num_voxel=self.coverage_map_num_voxel,
         )
 
         if (

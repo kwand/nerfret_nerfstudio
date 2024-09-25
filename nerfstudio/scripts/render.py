@@ -770,7 +770,9 @@ class DatasetRender(BaseRender):
     idx: List[int] = list_field(0,)
     render_subset: bool = True
 
-    def main(self):
+    def main(self,
+             do_coverage_map_override=None) -> None:
+        do_coverage_map = self.do_coverage_map if do_coverage_map_override is None else do_coverage_map_override
         config: TrainerConfig
 
         def update_config(config: TrainerConfig) -> TrainerConfig:
@@ -821,7 +823,7 @@ class DatasetRender(BaseRender):
             
             # JS CODE for Depth based scene coverage
             coverage_grid_class: Optional[DirectionRayVoxelIntersection] = None
-            if self.do_coverage_map:
+            if do_coverage_map:
                 coverage_grid_class = DirectionRayVoxelIntersection(
                     num_voxel=self.coverage_map_num_voxel,
                     device=datamanager.device,
@@ -861,7 +863,7 @@ class DatasetRender(BaseRender):
                     with torch.no_grad():
                         outputs, camera_ray_bundle = pipeline.model.get_outputs_for_camera(camera, return_ray_bundle=True)
 
-                    if self.do_coverage_map:
+                    if do_coverage_map:
                         start = time.time()
                         coverage_grid = coverage_grid_class.update_coverage_map(
                             origins=camera_ray_bundle.origins,

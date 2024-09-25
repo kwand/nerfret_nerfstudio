@@ -62,176 +62,13 @@ from nerfstudio.utils import colormaps, install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
-from nerfstudio.field_components.spatial_distortions import DirectionRayVoxelIntersection
-import nerfstudio.models.nerfacto as nerfacto
+from nerfstudio.field_components.coverage_map import DirectionRayVoxelIntersection
 
 
 import tables
 import pgzip
 
 from nerfstudio.field_components.spatial_distortions import SceneContraction
-
-
-def dda_ray_traversal_non_vectorized(origins, directions, depths, voxel_size, voxel_grid):
-    """
-    Updates a 3D voxel grid based on ray intersections using the DDA algorithm.
-    
-    Parameters:
-    origins (torch.Tensor): A tensor of shape (N, 3) representing the origins of N rays.
-    directions (torch.Tensor): A tensor of shape (N, 3) representing the directions of N rays.
-    depths (torch.Tensor): A tensor of shape (N,) representing the maximum length of each ray.
-    voxel_size (float): The size of each voxel.
-    voxel_grid (torch.Tensor): A tensor of shape (64, 64, 64) representing the voxel grid.
-    
-    Returns:
-    torch.Tensor: Updated voxel grid with intersected voxels marked.
-    """
-    # Ensure tensors are on the same device
-    device = origins.device
-    origins += 2 # Origins originally range from -1 to 1, so shift them to 1 to 3 
-    N = origins.size(0)
-    voxel_grid_size = voxel_grid.size()
-    
-    # Compute voxel dimensions
-    voxel_dims = torch.tensor(voxel_grid_size, dtype=torch.float32, device=device)
-    
-    # Scale directions to account for voxel size
-    scaled_directions = directions * (1 / voxel_size)
-    
-    for i in range(N):
-        origin = origins[i]
-        direction = scaled_directions[i]
-        depth = depths[i]
-        
-        # Initial voxel position
-        x, y, z = (origin / voxel_size).floor().long()
-        
-        # Maximum coordinates the ray can reach
-        max_x = (origin[0] + direction[0] * depth) / voxel_size
-        max_y = (origin[1] + direction[1] * depth) / voxel_size
-        max_z = (origin[2] + direction[2] * depth) / voxel_size
-        
-        # Direction steps
-        step_x = torch.sign(direction[0]).long().item()
-        step_y = torch.sign(direction[1]).long().item()
-        step_z = torch.sign(direction[2]).long().item()
-        
-        # Calculate steps and increments
-        t_max_x = (torch.floor(origin[0] / voxel_size) + (1 if step_x > 0 else 0) - origin[0] / voxel_size) / direction[0]
-        t_max_y = (torch.floor(origin[1] / voxel_size) + (1 if step_y > 0 else 0) - origin[1] / voxel_size) / direction[1]
-        t_max_z = (torch.floor(origin[2] / voxel_size) + (1 if step_z > 0 else 0) - origin[2] / voxel_size) / direction[2]
-        
-        t_delta_x = 1.0 / torch.abs(direction[0])
-        t_delta_y = 1.0 / torch.abs(direction[1])
-        t_delta_z = 1.0 / torch.abs(direction[2])
-        
-        # Traverse the voxel grid
-        while 0 <= x < voxel_grid_size[0] and 0 <= y < voxel_grid_size[1] and 0 <= z < voxel_grid_size[2]:
-            voxel_grid[x, y, z] = 1
-            
-            if t_max_x < t_max_y:
-                if t_max_x < t_max_z:
-                    x += step_x
-                    t_max_x += t_delta_x
-                else:
-                    z += step_z
-                    t_max_z += t_delta_z
-            else:
-                if t_max_y < t_max_z:
-                    y += step_y
-                    t_max_y += t_delta_y
-                else:
-                    z += step_z
-                    t_max_z += t_delta_z
-            
-            # Stop if the ray exceeds its maximum length
-            if (step_x > 0 and x > max_x) or (step_x < 0 and x < max_x) or \
-               (step_y > 0 and y > max_y) or (step_y < 0 and y < max_y) or \
-               (step_z > 0 and z > max_z) or (step_z < 0 and z < max_z):
-                break
-    
-    return voxel_grid
-
-def dda_ray_traversal_vectorized(origins, directions, depths, voxel_size, coverage_grid):
-    """
-    Updates a 3D voxel grid based on ray intersections using the DDA algorithm.
-    
-    Parameters:
-    origins (torch.Tensor): A tensor of shape (N, 3) representing the origins of N rays.
-    directions (torch.Tensor): A tensor of shape (N, 3) representing the directions of N rays.
-    depths (torch.Tensor): A tensor of shape (N,) representing the maximum length of each ray.
-    voxel_size (float): The size of each voxel.
-    voxel_grid (torch.Tensor): A tensor of shape (n, n, n) representing the voxel grid. n is roughly 64.
-    
-    Returns:
-    torch.Tensor: Updated voxel grid with intersected voxels marked.
-    """
-    # Ensure tensors are on the same device
-    device = origins.device
-    origins += 2 # Origins originally range from -1 to 1, so shift them to 1 to 3 
-    N = origins.size(0)
-    voxel_grid_size = coverage_grid.size()
-    
-    # Compute voxel dimensions
-    voxel_dims = torch.tensor(voxel_grid_size, dtype=torch.float32, device=device)
-    
-    # Scale directions to account for voxel size
-    scaled_directions = directions * (1 / voxel_size)
-    
-    # Initial voxel positions
-    x, y, z = (origins / voxel_size).floor().long().unbind(1)
-    
-    # Maximum coordinates the rays can reach
-    max_x = (origins[:, 0] + scaled_directions[:, 0] * depths) / voxel_size
-    max_y = (origins[:, 1] + scaled_directions[:, 1] * depths) / voxel_size
-    max_z = (origins[:, 2] + scaled_directions[:, 2] * depths) / voxel_size
-    
-    # Direction steps
-    step_x = torch.sign(scaled_directions[:, 0]).long()
-    step_y = torch.sign(scaled_directions[:, 1]).long()
-    step_z = torch.sign(scaled_directions[:, 2]).long()
-    
-    # Calculate steps and increments
-    t_max_x = (torch.floor(origins[:, 0] / voxel_size) + (step_x > 0) - origins[:, 0] / voxel_size) / scaled_directions[:, 0]
-    t_max_y = (torch.floor(origins[:, 1] / voxel_size) + (step_y > 0) - origins[:, 1] / voxel_size) / scaled_directions[:, 1]
-    t_max_z = (torch.floor(origins[:, 2] / voxel_size) + (step_z > 0) - origins[:, 2] / voxel_size) / scaled_directions[:, 2]
-
-    t_delta_x = 1.0 / torch.abs(scaled_directions[:, 0])
-    t_delta_y = 1.0 / torch.abs(scaled_directions[:, 1])
-    t_delta_z = 1.0 / torch.abs(scaled_directions[:, 2])
-
-    # Traverse the voxel grid
-    while True:
-        valid_voxels = (0 <= x) & (x < voxel_grid_size[0]) & \
-                          (0 <= y) & (y < voxel_grid_size[1]) & \
-                            (0 <= z) & (z < voxel_grid_size[2])
-        
-        # Update the voxel grid
-        coverage_grid[x[valid_voxels], y[valid_voxels], z[valid_voxels]] = 1
-
-        # Determine the next axis to traverse
-        min_t_max = torch.min(t_max_x, torch.min(t_max_y, t_max_z))
-        x_mask = min_t_max == t_max_x
-        y_mask = min_t_max == t_max_y
-        z_mask = min_t_max == t_max_z
-
-        # Update voxel positions
-        x += step_x * x_mask.long()
-        y += step_y * y_mask.long()
-        z += step_z * z_mask.long()
-
-        # Update t_max values
-        t_max_x += t_delta_x * x_mask.float()
-        t_max_y += t_delta_y * y_mask.float()
-        t_max_z += t_delta_z * z_mask.float()
-
-        # Stop if the rays exceed their maximum lengths
-        if torch.all((step_x > 0) & (x > max_x) | (step_x < 0) & (x < max_x) | \
-                        (step_y > 0) & (y > max_y) | (step_y < 0) & (y < max_y) | \
-                        (step_z > 0) & (z > max_z) | (step_z < 0) & (z < max_z)):
-                break
-        
-    return coverage_grid
 
 
 def _render_trajectory_video(
@@ -278,15 +115,11 @@ def _render_trajectory_video(
     # JS CODE for Depth based scene coverage
     coverage_grid_class: Optional[DirectionRayVoxelIntersection] = None
     if do_coverage_map:
-        ngr_model = None
-        if isinstance(pipeline.model, nerfacto.NerfactoModel):
-            ngr_model = pipeline.model
-        
         coverage_grid_class = DirectionRayVoxelIntersection(
             num_voxel=coverage_map_num_voxel,
             device=cameras.camera_to_worlds.device,
             do_orientation=True,
-            ngr_model=ngr_model,
+            ngr_model=pipeline.model,
         )
     
     progress = Progress(
@@ -389,18 +222,13 @@ def _render_trajectory_video(
                         cam = cameras[camera_idx]
                         ray_bundle = cam.generate_rays(camera_indices=0, keep_shape=True, obb_box=obb_box)
 
-                        # Make a copy of origins and directions to avoid modifying the original tensor
-                        origins = ray_bundle.origins.reshape(-1, 3).clone()
-                        directions = ray_bundle.directions.reshape(-1, 3).clone()
-                        depths = outputs['depth'].reshape(-1)
-
                         # Get time taken to run dda_ray_traversal_vectorized
                         if do_coverage_map:
                             start = time.time()
                             coverage_grid = coverage_grid_class.update_coverage_map(
-                                origins = origins,
-                                directions = directions,
-                                depths = depths,
+                                origins = ray_bundle.origins,
+                                directions = ray_bundle.directions,
+                                depths = outputs['depth'],
                             )
                             end = time.time()
                             print()
@@ -482,29 +310,6 @@ def _render_trajectory_video(
                             )
                         )
                     writer.add_image(render_image)
-
-        # dummy = 1
-        # if do_coverage_map and isinstance(pipeline.model, nerfacto.NerfactoModel):
-        #     modelfield = pipeline.model.field
-        #     grid_locations = coverage_grid_class.get_map_grid_locations()
-        #     densitys, _ = modelfield.get_density_from_warped_positions(grid_locations)
-        #     occupied = densitys >= 0.5
-        #     occupied = occupied.squeeze(-1)
-        #     coverage_grid_unoriented = coverage_grid_class.get_coverage_map_unoriented()
-        #     # Check overlap between occupied voxels and covered voxels
-        #     overlap = occupied & coverage_grid_unoriented
-        #     overlap_sum = overlap.sum()
-        #     coverage_with_orientation = coverage_grid_unoriented.sum()
-        #     oriented_sum = coverage_grid.sum()
-        #     occupied_sum = occupied.sum()
-        #     total_voxels = (num_voxels ** 3)
-        #     total_voxel_faces = total_voxels * 6
-        #     print(f"Oriented Coverage: {oriented_sum} / {total_voxel_faces} ({oriented_sum / total_voxel_faces * 100:.2f}%)")
-        #     print(f"Coverage: {coverage_with_orientation} / {total_voxels} ({coverage_with_orientation / total_voxels * 100:.2f}%)")
-        #     print(f"Occupied: {occupied_sum} / {total_voxels} ({occupied_sum / total_voxels * 100:.2f}%)")
-        #     print(f"Overlap: {overlap_sum} / {total_voxels} ({overlap_sum / total_voxels * 100:.2f}%)")
-        #     dummy = 1
-        
 
     table = Table(
         title=None,
@@ -686,7 +491,8 @@ class RenderCameraPath(BaseRender):
     output_format: Literal["images", "video"] = "video"
     """How to save output data."""
 
-    def main(self) -> None:
+    def main(self,
+             do_coverage_map_override=None) -> None:
         """Main function."""
         _, pipeline, _, _ = eval_setup(
             self.load_config,
@@ -741,7 +547,7 @@ class RenderCameraPath(BaseRender):
             colormap_options=self.colormap_options,
             render_nearest_camera=self.render_nearest_camera,
             check_occlusions=self.check_occlusions,
-            do_coverage_map=self.do_coverage_map,
+            do_coverage_map=self.do_coverage_map if do_coverage_map_override is None else do_coverage_map_override,
             coverage_map_num_voxel=self.coverage_map_num_voxel,
         )
 
@@ -1012,6 +818,17 @@ class DatasetRender(BaseRender):
                 num_workers=datamanager.world_size * 4,
             )
             images_root = Path(os.path.commonpath(dataparser_outputs.image_filenames))
+            
+            # JS CODE for Depth based scene coverage
+            coverage_grid_class: Optional[DirectionRayVoxelIntersection] = None
+            if self.do_coverage_map:
+                coverage_grid_class = DirectionRayVoxelIntersection(
+                    num_voxel=self.coverage_map_num_voxel,
+                    device=datamanager.device,
+                    do_orientation=True,
+                    ngr_model=pipeline.model,
+                )
+            
             with Progress(
                 TextColumn(f":movie_camera: Rendering split {split} :movie_camera:"),
                 BarColumn(),
@@ -1043,6 +860,18 @@ class DatasetRender(BaseRender):
 
                     with torch.no_grad():
                         outputs, camera_ray_bundle = pipeline.model.get_outputs_for_camera(camera, return_ray_bundle=True)
+
+                    if self.do_coverage_map:
+                        start = time.time()
+                        coverage_grid = coverage_grid_class.update_coverage_map(
+                            origins=camera_ray_bundle.origins,
+                            directions=camera_ray_bundle.directions,
+                            depths=outputs["depth"],
+                        )
+                        end = time.time()
+                        print()
+                        print(f"Camera id: {camera_idx}, Time: {end - start:.5f} sec")
+                        coverage_grid_class.report_stats()
 
                     gt_batch = batch.copy()
                     gt_batch["rgb"] = gt_batch.pop("image")

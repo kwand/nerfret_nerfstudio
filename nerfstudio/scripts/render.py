@@ -63,6 +63,7 @@ from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE, ItersPerSecColumn
 from nerfstudio.utils.scripts import run_command
 from nerfstudio.field_components.coverage_map import DirectionRayVoxelIntersection
+import nerfstudio.models.nerfacto as nerfacto
 
 
 import tables
@@ -823,6 +824,7 @@ class DatasetRender(BaseRender):
             
             # JS CODE for Depth based scene coverage
             coverage_grid_class: Optional[DirectionRayVoxelIntersection] = None
+            do_coverage_map = False if not isinstance(pipeline.model, nerfacto.NerfactoModel) else do_coverage_map
             if do_coverage_map:
                 coverage_grid_class = DirectionRayVoxelIntersection(
                     num_voxel=self.coverage_map_num_voxel,
@@ -861,7 +863,10 @@ class DatasetRender(BaseRender):
                             continue
 
                     with torch.no_grad():
-                        outputs, camera_ray_bundle = pipeline.model.get_outputs_for_camera(camera, return_ray_bundle=True)
+                        if do_coverage_map:
+                            outputs, camera_ray_bundle = pipeline.model.get_outputs_for_camera(camera, return_ray_bundle=True)
+                        else:
+                            outputs = pipeline.model.get_outputs_for_camera(camera)
 
                     if do_coverage_map:
                         start = time.time()
